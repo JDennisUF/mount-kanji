@@ -1169,12 +1169,12 @@ Use this checklist to track implementation progress as we build Mount Kanji.
 
 ## MVP Core Loop
 
-- [ ] Implement database initialization and repository layer.
+- [x] Implement database initialization and repository layer.
 - [ ] Add seed import pipeline for 100 JLPT N5 kanji.
 - [ ] Add lesson data for first 20 structured lessons.
 - [ ] Build Home -> Lesson -> Quiz -> Review flow end-to-end.
 - [ ] Persist quiz attempts and progress updates in SQLite.
-- [ ] Implement review queue using Again/Hard/Good/Easy grading.
+- [x] Implement review queue using Again/Hard/Good/Easy grading.
 - [ ] Enforce mastery rule: 5 correct meaning reviews and 80%+ accuracy.
 
 ## MVP Features
