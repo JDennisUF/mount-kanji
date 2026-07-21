@@ -1148,3 +1148,58 @@ Special achievements:
 - Reward consistency over marathon study sessions.
 - The mountain theme should support learning without becoming distracting.
 - Every new feature should answer the question: "Does this help someone climb the mountain?"
+
+---
+
+# 24. Build Progress Checklist
+
+Use this checklist to track implementation progress as we build Mount Kanji.
+
+## Foundation (Current)
+
+- [x] Scaffold project in repo root with Tauri + React + TypeScript.
+- [x] Install dependencies and verify production build succeeds.
+- [x] Set up Tailwind CSS (v4 Vite plugin).
+- [x] Replace starter template with Mount Kanji Base Camp dashboard shell.
+- [x] Add initial TypeScript domain types for kanji, lessons, quiz, and progress.
+- [x] Add initial SQLite schema draft.
+- [x] Add first spaced-repetition service and review scheduler service.
+- [x] Add unit test setup (Vitest) and first scheduler tests.
+- [x] Add first interactive prototype flow: dashboard -> lesson -> quiz -> summary.
+
+## MVP Core Loop
+
+- [ ] Implement database initialization and repository layer.
+- [ ] Add seed import pipeline for 100 JLPT N5 kanji.
+- [ ] Add lesson data for first 20 structured lessons.
+- [ ] Build Home -> Lesson -> Quiz -> Review flow end-to-end.
+- [ ] Persist quiz attempts and progress updates in SQLite.
+- [ ] Implement review queue using Again/Hard/Good/Easy grading.
+- [ ] Enforce mastery rule: 5 correct meaning reviews and 80%+ accuracy.
+
+## MVP Features
+
+- [ ] Build Kanji Detail screen (meanings, readings, radicals, examples).
+- [ ] Build Dictionary/Search (kanji, meaning, radical, JLPT, sumo relevance).
+- [ ] Build Progress screen (streaks, mastered count, weak kanji, accuracy).
+- [ ] Add settings: furigana default on, romaji optional toggle.
+- [ ] Add accessibility controls: text size, reduced motion, contrast-safe feedback.
+
+## Sumo Content (MVP Data + Phase 2 Interactions)
+
+- [ ] Add curated sumo seed content (25 terms + 10 rank names).
+- [ ] Tag sumo-relevant kanji and vocabulary in data.
+- [ ] Phase 2: build Sumo Hub interactive modes (rank trainer, banzuke trainer, shikona explorer, broadcast recognition).
+
+## Quality Gates
+
+- [ ] Add repository and progress-service unit tests.
+- [ ] Add integration tests for lesson-to-review lifecycle.
+- [ ] Add Playwright happy-path tests for study flow.
+- [ ] Verify app behavior in desktop shell once Linux prerequisites are installed.
+
+## Release Readiness
+
+- [ ] Verify licensing and attribution requirements for language datasets.
+- [ ] Freeze MVP scope and defer non-MVP items.
+- [ ] Ship first local-first desktop MVP.
