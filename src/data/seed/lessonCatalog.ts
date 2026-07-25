@@ -8,8 +8,6 @@ export interface SeedLesson {
 }
 
 const LESSON_BATCH_SIZE = 5;
-const LESSON_COUNT = 20;
-const LESSON_OFFSET_STRIDE = 3;
 
 const lessonTitles = [
   "Strength and People",
@@ -35,27 +33,18 @@ const lessonTitles = [
 ];
 
 function buildKanjiIdsForLesson(startOffset: number): string[] {
-  if (beginnerKanjiPool.length === 0) {
-    return [];
-  }
-
-  const picked: string[] = [];
-  for (let i = 0; i < Math.min(LESSON_BATCH_SIZE, beginnerKanjiPool.length); i += 1) {
-    const index = (startOffset + i) % beginnerKanjiPool.length;
-    picked.push(beginnerKanjiPool[index].id);
-  }
-
-  return picked;
+  return beginnerKanjiPool.slice(startOffset, startOffset + LESSON_BATCH_SIZE).map((kanji) => kanji.id);
 }
 
 function buildSeedLessons(): SeedLesson[] {
   const lessons: SeedLesson[] = [];
+  const lessonCount = Math.ceil(beginnerKanjiPool.length / LESSON_BATCH_SIZE);
 
-  for (let i = 0; i < LESSON_COUNT; i += 1) {
-    const offset = (i * LESSON_OFFSET_STRIDE) % Math.max(1, beginnerKanjiPool.length);
+  for (let i = 0; i < lessonCount; i += 1) {
+    const offset = i * LESSON_BATCH_SIZE;
     lessons.push({
       id: `lesson_beginner_${String(i + 1).padStart(3, "0")}`,
-      title: lessonTitles[i] ?? `Beginner Lesson ${i + 1}`,
+      title: lessonTitles[i] ?? `JLPT Lesson ${i + 1}`,
       focus: "Meaning-first recognition",
       kanjiIds: buildKanjiIdsForLesson(offset),
     });

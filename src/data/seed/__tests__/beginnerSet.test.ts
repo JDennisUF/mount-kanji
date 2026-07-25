@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import { beginnerKanjiPool } from "../beginnerSet";
 
-describe("N5 beginner dataset", () => {
-  it("contains 100 kanji for MVP", () => {
-    expect(beginnerKanjiPool).toHaveLength(100);
+describe("seed kanji dataset", () => {
+  it("contains the expanded N5, N4, and N3 seed pool", () => {
+    expect(beginnerKanjiPool).toHaveLength(612);
   });
 
   it("has unique kanji characters", () => {
@@ -12,8 +12,15 @@ describe("N5 beginner dataset", () => {
     expect(uniqueCharacters.size).toBe(beginnerKanjiPool.length);
   });
 
-  it("marks all rows as N5", () => {
-    const nonN5 = beginnerKanjiPool.filter((kanji) => kanji.jlptLevel !== "N5");
-    expect(nonN5).toHaveLength(0);
+  it("keeps the expected per-level counts", () => {
+    const counts = beginnerKanjiPool.reduce<Record<string, number>>((accumulator, kanji) => {
+      const level = kanji.jlptLevel ?? "unknown";
+      accumulator[level] = (accumulator[level] ?? 0) + 1;
+      return accumulator;
+    }, {});
+
+    expect(counts.N5).toBe(100);
+    expect(counts.N4).toBe(145);
+    expect(counts.N3).toBe(367);
   });
 });

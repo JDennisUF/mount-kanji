@@ -1,4 +1,5 @@
 import type { Kanji } from "../../types";
+import { jlptSupplementRows } from "./jlptSupplement";
 
 type SeedRow = {
   character: string;
@@ -150,7 +151,7 @@ const n5SeedRows: SeedRow[] = [
 
 const N5_MVP_COUNT = 100;
 
-export const beginnerKanjiPool: Kanji[] = n5SeedRows.slice(0, N5_MVP_COUNT).map((row, index) => ({
+const n5KanjiPool: Kanji[] = n5SeedRows.slice(0, N5_MVP_COUNT).map((row, index) => ({
   id: `kanji_n5_${String(index + 1).padStart(3, "0")}`,
   character: row.character,
   primaryMeaning: row.primaryMeaning,
@@ -163,3 +164,39 @@ export const beginnerKanjiPool: Kanji[] = n5SeedRows.slice(0, N5_MVP_COUNT).map(
   sumoRelevant: row.sumoRelevant ?? false,
   tags: ["beginner", "n5", ...row.tags],
 }));
+
+const existingCharacters = new Set(n5KanjiPool.map((kanji) => kanji.character));
+
+const n4SupplementPool: Kanji[] = jlptSupplementRows
+  .filter((row) => row.jlptLevel === "N4" && !existingCharacters.has(row.character))
+  .map((row, index) => ({
+    id: `kanji_n4_${String(index + 1).padStart(3, "0")}`,
+    character: row.character,
+    primaryMeaning: row.primaryMeaning,
+    meanings: row.meanings,
+    onyomi: row.onyomi,
+    kunyomi: row.kunyomi,
+    strokeCount: row.strokeCount,
+    radical: row.radical,
+    jlptLevel: "N4" as const,
+    sumoRelevant: row.sumoRelevant ?? false,
+    tags: row.tags,
+  }));
+
+const n3SupplementPool: Kanji[] = jlptSupplementRows
+  .filter((row) => row.jlptLevel === "N3" && !existingCharacters.has(row.character))
+  .map((row, index) => ({
+    id: `kanji_n3_${String(index + 1).padStart(3, "0")}`,
+    character: row.character,
+    primaryMeaning: row.primaryMeaning,
+    meanings: row.meanings,
+    onyomi: row.onyomi,
+    kunyomi: row.kunyomi,
+    strokeCount: row.strokeCount,
+    radical: row.radical,
+    jlptLevel: "N3" as const,
+    sumoRelevant: row.sumoRelevant ?? false,
+    tags: row.tags,
+  }));
+
+export const beginnerKanjiPool: Kanji[] = [...n5KanjiPool, ...n4SupplementPool, ...n3SupplementPool];
