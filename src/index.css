@@ -30,3 +30,11 @@ h2,
 h3 {
   font-family: "Shippori Mincho", serif;
 }
+
+.reduced-motion *,
+.reduced-motion *::before,
+.reduced-motion *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}

@@ -16,7 +16,8 @@
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-sql": "^2.4.0",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "wanakana": "^5.3.1"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",

@@ -1,13 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
+import { toRomaji } from "wanakana";
 
 import { beginnerKanjiPool } from "./data/seed/beginnerSet";
 import { seedLessons } from "./data/seed/lessonCatalog";
+import { sumoTerms, type SumoTerm } from "./data/seed/sumoTerms";
 import { createProgressRepository } from "./repositories/progressRepositoryFactory";
 import { ReviewScheduler } from "./services/reviewScheduler";
 import type { ProgressRepository } from "./repositories/progressRepository";
 import type { Kanji, QuizAttempt, UserKanjiProgress } from "./types";
 
-type Screen = "dashboard" | "lesson" | "quiz" | "review" | "summary" | "dictionary" | "progress";
+type Screen =
+  | "dashboard"
+  | "lesson"
+  | "quiz"
+  | "review"
+  | "summary"
+  | "dictionary"
+  | "progress"
+  | "settings"
+  | "sumo";
 
 interface QuizQuestion {
   kanjiId: string;
@@ -18,6 +29,25 @@ interface QuizQuestion {
 
 const SESSION_TARGET_MINUTES = "5-10";
 const LESSON_CURSOR_STORAGE_KEY = "mount-kanji-lesson-cursor";
+const SETTINGS_STORAGE_KEY = "mount-kanji-settings";
+
+type TextScale = 90 | 100 | 110 | 125;
+
+interface AppSettings {
+  showFurigana: boolean;
+  showRomaji: boolean;
+  reducedMotion: boolean;
+  textScale: TextScale;
+}
+
+type SumoCategoryFilter = "all" | SumoTerm["category"];
+
+const DEFAULT_SETTINGS: AppSettings = {
+  showFurigana: true,
+  showRomaji: false,
+  reducedMotion: false,
+  textScale: 100,
+};
 
 const scheduler = new ReviewScheduler();
 
@@ -114,6 +144,30 @@ function computeStreaks(attempts: QuizAttempt[]): { currentStreak: number; longe
   return { currentStreak: current, longestStreak: longest };
 }
 
+function formatReadings(readings: string[], showRomaji: boolean): string {
+  if (readings.length === 0) {
+    return "-";
+  }
+
+  return readings
+    .map((reading) => {
+      if (!showRomaji || reading === "-") {
+        return reading;
+      }
+
+      return `${reading} (${toRomaji(reading)})`;
+    })
+    .join(", ");
+}
+
+function accuracyPercent(row: UserKanjiProgress): number {
+  const total = row.correctCount + row.incorrectCount;
+  if (total === 0) {
+    return 0;
+  }
+  return Math.round((row.correctCount / total) * 100);
+}
+
 function App() {
   const [screen, setScreen] = useState<Screen>("dashboard");
   const [lessonIndex, setLessonIndex] = useState(0);
@@ -124,9 +178,24 @@ function App() {
   const [reviewFeedback, setReviewFeedback] = useState<string>("");
   const [progressByKanji, setProgressByKanji] = useState<Record<string, UserKanjiProgress>>({});
   const [quizAttempts, setQuizAttempts] = useState<QuizAttempt[]>([]);
+  const [sessionMissedKanjiIds, setSessionMissedKanjiIds] = useState<string[]>([]);
+  const [settings, setSettings] = useState<AppSettings>(() => {
+    const serialized = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (!serialized) {
+      return DEFAULT_SETTINGS;
+    }
+
+    try {
+      return { ...DEFAULT_SETTINGS, ...(JSON.parse(serialized) as Partial<AppSettings>) };
+    } catch {
+      return DEFAULT_SETTINGS;
+    }
+  });
   const [dictionaryQuery, setDictionaryQuery] = useState("");
   const [dictionaryRadical, setDictionaryRadical] = useState("all");
   const [dictionarySumoOnly, setDictionarySumoOnly] = useState(false);
+  const [sumoQuery, setSumoQuery] = useState("");
+  const [sumoCategory, setSumoCategory] = useState<SumoCategoryFilter>("all");
   const [selectedKanjiId, setSelectedKanjiId] = useState<string>(beginnerKanjiPool[0]?.id ?? "");
   const [activeLessonKanji, setActiveLessonKanji] = useState<Kanji[]>(() => {
     const firstLesson = seedLessons[0];
@@ -196,6 +265,10 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem(LESSON_CURSOR_STORAGE_KEY, String(lessonCursor));
   }, [lessonCursor]);
+
+  useEffect(() => {
+    window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  }, [settings]);
 
   const overallStats = useMemo(() => {
     const rows = Object.values(progressByKanji);
@@ -285,6 +358,27 @@ function App() {
     const selected = filteredDictionaryKanji.find((kanji) => kanji.id === selectedKanjiId);
     return selected ?? filteredDictionaryKanji[0] ?? null;
   }, [filteredDictionaryKanji, selectedKanjiId]);
+  const selectedDictionaryProgress = selectedDictionaryKanji ? progressByKanji[selectedDictionaryKanji.id] : null;
+
+  const filteredSumoTerms = useMemo(() => {
+    const query = sumoQuery.trim().toLowerCase();
+    return sumoTerms.filter((term) => {
+      if (sumoCategory !== "all" && term.category !== sumoCategory) {
+        return false;
+      }
+
+      if (!query) {
+        return true;
+      }
+
+      return (
+        term.term.includes(sumoQuery.trim()) ||
+        term.meaning.toLowerCase().includes(query) ||
+        term.readingKana.toLowerCase().includes(query) ||
+        term.readingRomaji.toLowerCase().includes(query)
+      );
+    });
+  }, [sumoCategory, sumoQuery]);
 
   function startLesson() {
     const lessonDefinition = seedLessons[lessonCursor];
@@ -299,16 +393,20 @@ function App() {
     setQuizIndex(0);
     setQuizScore(0);
     setReviewDoneCount(0);
+    setSessionMissedKanjiIds([]);
     setReviewFeedback("");
     setLastAnswerCorrect(null);
     setQuizQuestions(buildQuizQuestions(lessonSegment));
   }
 
-  function startReviewQueue() {
+  function startReviewQueue(seedKanjiIds: string[] = []) {
     const rows = Object.values(progressByKanji);
     const due = scheduler.getDue(rows);
     const urgentNeedsReview = rows.filter((row) => row.status === "needs_review" && !due.some((item) => item.kanjiId === row.kanjiId));
-    const queue = [...urgentNeedsReview, ...due];
+    const seeded = seedKanjiIds
+      .map((kanjiId) => progressByKanji[kanjiId] ?? createDefaultProgress(kanjiId))
+      .filter((row) => !urgentNeedsReview.some((item) => item.kanjiId === row.kanjiId) && !due.some((item) => item.kanjiId === row.kanjiId));
+    const queue = [...seeded, ...urgentNeedsReview, ...due];
 
     setReviewQueue(queue);
     setReviewDoneCount(0);
@@ -322,6 +420,18 @@ function App() {
 
   function openProgress() {
     setScreen("progress");
+  }
+
+  function openSumo() {
+    setScreen("sumo");
+  }
+
+  function openReviewQueue() {
+    startReviewQueue();
+  }
+
+  function openSettings() {
+    setScreen("settings");
   }
 
   function advanceLesson() {
@@ -364,6 +474,13 @@ function App() {
 
     if (isCorrect) {
       setQuizScore((value) => value + 1);
+    } else {
+      setSessionMissedKanjiIds((existing) => {
+        if (existing.includes(currentQuestion.kanjiId)) {
+          return existing;
+        }
+        return [...existing, currentQuestion.kanjiId];
+      });
     }
 
     if (quizIndex + 1 >= quizQuestions.length) {
@@ -389,17 +506,19 @@ function App() {
       return;
     }
 
+    const activeProgress = progressByKanji[currentReviewProgress.kanjiId] ?? currentReviewProgress;
+    const updatedProgress = scheduler.applyReview(activeProgress, grade);
+
     setProgressByKanji((previous) => {
-      const active = previous[currentReviewProgress.kanjiId] ?? currentReviewProgress;
-      const updated = scheduler.applyReview(active, grade);
       return {
         ...previous,
-        [updated.kanjiId]: updated,
+        [updatedProgress.kanjiId]: updatedProgress,
       };
     });
 
     setReviewDoneCount((count) => count + 1);
-    setReviewFeedback(`Marked ${grade.toUpperCase()} for ${currentReviewKanji?.character ?? "kanji"}.`);
+    const masteryNote = updatedProgress.status === "mastered" ? " Mastered!" : "";
+    setReviewFeedback(`Marked ${grade.toUpperCase()} for ${currentReviewKanji?.character ?? "kanji"}.${masteryNote}`);
     setReviewQueue((queue) => queue.slice(1));
   }
 
@@ -410,12 +529,15 @@ function App() {
   ];
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-sky-50 via-cyan-50 to-emerald-50 text-slate-900">
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-6 py-8 sm:px-10">
-        <header className="rounded-3xl border border-white/70 bg-white/70 p-6 shadow-lg backdrop-blur">
+    <div
+      className={`min-h-screen bg-gradient-to-b from-sky-50 via-cyan-50 to-emerald-50 text-slate-900 ${settings.reducedMotion ? "reduced-motion" : ""}`}
+      style={{ fontSize: `${settings.textScale}%` }}
+    >
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-4 py-4 sm:px-6">
+        <header className="rounded-3xl border border-white/70 bg-white/70 p-4 shadow-lg backdrop-blur">
           <p className="text-sm font-semibold uppercase tracking-[0.2em] text-cyan-700">Mount Kanji</p>
-          <h1 className="mt-2 text-4xl font-bold leading-tight text-slate-900 sm:text-5xl">Base Camp Dashboard</h1>
-          <p className="mt-3 max-w-3xl text-base text-slate-700 sm:text-lg">
+          <h1 className="mt-1 text-3xl font-bold leading-tight text-slate-900 sm:text-4xl">Base Camp Dashboard</h1>
+          <p className="mt-1 max-w-4xl text-sm text-slate-700 sm:text-base">
             Learn kanji one confident step at a time: meaning first, short lessons, and retention-focused reviews.
           </p>
         </header>
@@ -440,9 +562,9 @@ function App() {
         </section>
 
         {screen === "dashboard" && (
-          <section className="rounded-3xl border border-white/70 bg-white/80 p-6 shadow-lg backdrop-blur">
+          <section className="rounded-3xl border border-white/70 bg-white/80 p-4 shadow-lg backdrop-blur">
             <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
-              <h2 className="text-2xl font-bold text-slate-900">Trails</h2>
+              <h2 className="text-xl font-bold text-slate-900">Trails</h2>
               <button
                 type="button"
                 onClick={startLesson}
@@ -452,7 +574,7 @@ function App() {
               </button>
               <button
                 type="button"
-                onClick={startReviewQueue}
+                onClick={openReviewQueue}
                 className="rounded-full border border-slate-900 bg-white px-5 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-100"
               >
                 Start Reviews ({overallStats.due})
@@ -471,49 +593,63 @@ function App() {
               >
                 Open Progress
               </button>
+              <button
+                type="button"
+                onClick={openSettings}
+                className="rounded-full border border-violet-700 bg-violet-50 px-5 py-2 text-sm font-semibold text-violet-900 transition hover:bg-violet-100"
+              >
+                Settings
+              </button>
+              <button
+                type="button"
+                onClick={openSumo}
+                className="rounded-full border border-amber-700 bg-amber-50 px-5 py-2 text-sm font-semibold text-amber-900 transition hover:bg-amber-100"
+              >
+                Sumo Terms
+              </button>
             </div>
 
-            <p className="mt-3 text-sm text-slate-600">
+            <p className="mt-2 text-sm text-slate-600">
               Next lesson: {seedLessons[lessonCursor]?.title ?? "Beginner Lesson"} ({(lessonCursor % seedLessons.length) + 1}/
               {seedLessons.length})
             </p>
 
-            <div className="mt-5 grid gap-4 md:grid-cols-3">
+            <div className="mt-3 grid gap-3 md:grid-cols-3">
               {trails.map((trail) => (
-                <article key={trail.name} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                  <h3 className="text-lg font-semibold text-slate-900">{trail.name}</h3>
+                <article key={trail.name} className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+                  <h3 className="text-base font-semibold text-slate-900">{trail.name}</h3>
                   <p className="mt-1 text-sm text-slate-600">{trail.focus}</p>
-                  <p className="mt-4 text-sm font-medium text-slate-800">Progress: {trail.progress}</p>
+                  <p className="mt-2 text-sm font-medium text-slate-800">Progress: {trail.progress}</p>
                 </article>
               ))}
             </div>
 
-            <div className="mt-6 grid gap-4 lg:grid-cols-2">
-              <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                <h3 className="text-lg font-semibold text-slate-900">Study Telemetry</h3>
-                <div className="mt-3 grid grid-cols-3 gap-3">
+            <div className="mt-3 grid gap-3 lg:grid-cols-2">
+              <article className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+                <h3 className="text-base font-semibold text-slate-900">Study Telemetry</h3>
+                <div className="mt-2 grid grid-cols-3 gap-2">
                   <div className="rounded-xl bg-slate-50 p-3">
                     <p className="text-xs uppercase tracking-wide text-slate-500">Attempts</p>
-                    <p className="mt-1 text-2xl font-bold text-slate-900">{quizAttempts.length}</p>
+                    <p className="mt-1 text-xl font-bold text-slate-900">{quizAttempts.length}</p>
                   </div>
                   <div className="rounded-xl bg-slate-50 p-3">
                     <p className="text-xs uppercase tracking-wide text-slate-500">Avg Response</p>
-                    <p className="mt-1 text-2xl font-bold text-slate-900">
+                    <p className="mt-1 text-xl font-bold text-slate-900">
                       {averageResponseMs > 0 ? `${(averageResponseMs / 1000).toFixed(1)}s` : "-"}
                     </p>
                   </div>
                   <div className="rounded-xl bg-slate-50 p-3">
                     <p className="text-xs uppercase tracking-wide text-slate-500">Mastered</p>
-                    <p className="mt-1 text-2xl font-bold text-slate-900">{overallStats.mastered}</p>
+                    <p className="mt-1 text-xl font-bold text-slate-900">{overallStats.mastered}</p>
                   </div>
                 </div>
               </article>
 
-              <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                <h3 className="text-lg font-semibold text-slate-900">Recent Attempts</h3>
-                {recentAttempts.length === 0 && <p className="mt-2 text-sm text-slate-600">No attempts yet.</p>}
+              <article className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+                <h3 className="text-base font-semibold text-slate-900">Recent Attempts</h3>
+                {recentAttempts.length === 0 && <p className="mt-1 text-sm text-slate-600">No attempts yet.</p>}
                 {recentAttempts.length > 0 && (
-                  <ul className="mt-2 space-y-2 text-sm text-slate-700">
+                  <ul className="mt-1 space-y-1 text-sm text-slate-700">
                     {recentAttempts.map((attempt) => {
                       const kanji = kanjiById.get(attempt.kanjiId);
                       return (
@@ -532,20 +668,22 @@ function App() {
         )}
 
         {screen === "lesson" && currentLessonKanji && (
-          <section className="rounded-3xl border border-white/70 bg-white/85 p-6 shadow-lg backdrop-blur">
+          <section className="rounded-3xl border border-white/70 bg-white/85 p-4 shadow-lg backdrop-blur">
             <p className="text-sm font-semibold uppercase tracking-wide text-cyan-800">{activeLessonTitle}</p>
             <p className="text-sm font-semibold uppercase tracking-wide text-cyan-700">
               Lesson Step {lessonIndex + 1} of {activeLessonKanji.length}
             </p>
-            <div className="mt-4 rounded-2xl border border-cyan-100 bg-white p-6">
+            <div className="mt-3 rounded-2xl border border-cyan-100 bg-white p-4">
               <p className="text-7xl font-bold text-slate-900">{currentLessonKanji.character}</p>
               <p className="mt-3 text-2xl font-semibold text-slate-800">{currentLessonKanji.primaryMeaning}</p>
               <p className="mt-2 text-slate-600">{currentLessonKanji.mnemonic}</p>
-              <p className="mt-3 text-sm text-slate-500">
-                Kun: {currentLessonKanji.kunyomi.join(", ")} | On: {currentLessonKanji.onyomi.join(", ")}
-              </p>
+              {settings.showFurigana && (
+                <p className="mt-3 text-sm text-slate-500">
+                  Kun: {formatReadings(currentLessonKanji.kunyomi, settings.showRomaji)} | On: {formatReadings(currentLessonKanji.onyomi, settings.showRomaji)}
+                </p>
+              )}
             </div>
-            <div className="mt-5 flex justify-end">
+            <div className="mt-3 flex justify-end">
               <button
                 type="button"
                 onClick={advanceLesson}
@@ -558,19 +696,19 @@ function App() {
         )}
 
         {screen === "quiz" && currentQuestion && (
-          <section className="rounded-3xl border border-white/70 bg-white/85 p-6 shadow-lg backdrop-blur">
+          <section className="rounded-3xl border border-white/70 bg-white/85 p-4 shadow-lg backdrop-blur">
             <p className="text-sm font-semibold uppercase tracking-wide text-emerald-700">
               Quiz {quizIndex + 1} of {quizQuestions.length}
             </p>
             <h2 className="mt-3 text-2xl font-bold text-slate-900">Which kanji means "{currentQuestion.promptMeaning}"?</h2>
 
-            <div className="mt-5 grid grid-cols-2 gap-3">
+            <div className="mt-3 grid grid-cols-2 gap-2">
               {currentQuestion.options.map((option) => (
                 <button
                   key={option}
                   type="button"
                   onClick={() => submitAnswer(option)}
-                  className="rounded-2xl border border-slate-200 bg-white px-4 py-6 text-4xl font-bold text-slate-900 transition hover:border-emerald-500 hover:bg-emerald-50"
+                  className="rounded-2xl border border-slate-200 bg-white px-3 py-5 text-4xl font-bold text-slate-900 transition hover:border-emerald-500 hover:bg-emerald-50"
                 >
                   {option}
                 </button>
@@ -586,14 +724,15 @@ function App() {
         )}
 
         {screen === "summary" && (
-          <section className="rounded-3xl border border-white/70 bg-white/85 p-6 shadow-lg backdrop-blur">
+          <section className="rounded-3xl border border-white/70 bg-white/85 p-4 shadow-lg backdrop-blur">
             <p className="text-sm font-semibold uppercase tracking-wide text-violet-700">Session Summary</p>
             <h2 className="mt-2 text-3xl font-bold text-slate-900">Trail Segment Complete</h2>
             <p className="mt-3 text-slate-700">
               You answered {quizScore} out of {quizQuestions.length} correctly and updated your review schedule.
             </p>
+            <p className="mt-1 text-sm text-slate-600">Mastery unlock rule: 5 correct in a row and at least 80% accuracy.</p>
 
-            <div className="mt-5 grid gap-4 sm:grid-cols-3">
+            <div className="mt-3 grid gap-3 sm:grid-cols-3">
               <article className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                 <p className="text-sm uppercase tracking-wide text-slate-500">Mastered</p>
                 <p className="mt-2 text-3xl font-bold text-slate-900">{overallStats.mastered}</p>
@@ -608,7 +747,16 @@ function App() {
               </article>
             </div>
 
-            <div className="mt-6 flex flex-wrap gap-3">
+            <div className="mt-4 flex flex-wrap gap-3">
+              {sessionMissedKanjiIds.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => startReviewQueue(sessionMissedKanjiIds)}
+                  className="rounded-full bg-amber-700 px-5 py-2 text-sm font-semibold text-white transition hover:bg-amber-600"
+                >
+                  Review Missed ({sessionMissedKanjiIds.length})
+                </button>
+              )}
               <button
                 type="button"
                 onClick={returnToDashboard}
@@ -627,13 +775,72 @@ function App() {
           </section>
         )}
 
+        {screen === "sumo" && (
+          <section className="rounded-3xl border border-white/70 bg-white/85 p-4 shadow-lg backdrop-blur">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-wide text-amber-700">Sumo</p>
+                <h2 className="mt-1 text-3xl font-bold text-slate-900">Tournament Terms Browser</h2>
+              </div>
+              <button
+                type="button"
+                onClick={returnToDashboard}
+                className="rounded-full bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition hover:bg-slate-700"
+              >
+                Back To Base Camp
+              </button>
+            </div>
+
+            <div className="mt-3 grid gap-2 md:grid-cols-4">
+              <input
+                type="text"
+                value={sumoQuery}
+                onChange={(event) => setSumoQuery(event.currentTarget.value)}
+                placeholder="Search by term, reading, or meaning"
+                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-amber-400 focus:ring-2 md:col-span-2"
+              />
+              <select
+                value={sumoCategory}
+                onChange={(event) => setSumoCategory(event.currentTarget.value as SumoCategoryFilter)}
+                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-amber-400 focus:ring-2"
+              >
+                <option value="all">All categories</option>
+                <option value="basics">Basics</option>
+                <option value="ranks">Ranks</option>
+                <option value="record">Record</option>
+                <option value="match">Match techniques</option>
+                <option value="events">Events & prizes</option>
+              </select>
+              <p className="flex items-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700">
+                {filteredSumoTerms.length} terms
+              </p>
+            </div>
+
+            <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+              {filteredSumoTerms.map((term) => (
+                <article key={term.id} className="rounded-2xl border border-amber-100 bg-white p-3 shadow-sm">
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-3xl font-bold text-slate-900">{term.term}</p>
+                    <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-900">
+                      {term.category}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-sm text-slate-700">{term.readingKana}</p>
+                  {settings.showRomaji && <p className="text-xs text-slate-500">{term.readingRomaji}</p>}
+                  <p className="mt-2 text-sm text-slate-800">{term.meaning}</p>
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
+
         {screen === "review" && (
-          <section className="rounded-3xl border border-white/70 bg-white/85 p-6 shadow-lg backdrop-blur">
+          <section className="rounded-3xl border border-white/70 bg-white/85 p-4 shadow-lg backdrop-blur">
             <p className="text-sm font-semibold uppercase tracking-wide text-amber-700">Review Queue</p>
             <h2 className="mt-2 text-3xl font-bold text-slate-900">Keep The Trail Fresh</h2>
 
             {!currentReviewKanji && (
-              <div className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50 p-5">
+              <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
                 <p className="text-lg font-semibold text-emerald-900">Queue complete.</p>
                 <p className="mt-2 text-emerald-800">You finished {reviewDoneCount} review cards in this session.</p>
                 <button
@@ -647,14 +854,19 @@ function App() {
             )}
 
             {currentReviewKanji && (
-              <div className="mt-5">
-                <div className="rounded-2xl border border-amber-100 bg-white p-6 text-center">
+              <div className="mt-3">
+                <div className="rounded-2xl border border-amber-100 bg-white p-4 text-center">
                   <p className="text-7xl font-bold text-slate-900">{currentReviewKanji.character}</p>
                   <p className="mt-3 text-xl font-semibold text-slate-800">{currentReviewKanji.primaryMeaning}</p>
+                  {settings.showFurigana && (
+                    <p className="mt-2 text-xs text-slate-500">
+                      Kun: {formatReadings(currentReviewKanji.kunyomi, settings.showRomaji)} | On: {formatReadings(currentReviewKanji.onyomi, settings.showRomaji)}
+                    </p>
+                  )}
                   <p className="mt-2 text-sm text-slate-600">Pick how well this felt so we can schedule the next review.</p>
                 </div>
 
-                <div className="mt-4 grid gap-3 sm:grid-cols-4">
+                <div className="mt-3 grid gap-2 sm:grid-cols-4">
                   <button
                     type="button"
                     onClick={() => applyReviewGrade("again")}
@@ -693,7 +905,7 @@ function App() {
         )}
 
         {screen === "dictionary" && (
-          <section className="rounded-3xl border border-white/70 bg-white/85 p-6 shadow-lg backdrop-blur">
+          <section className="rounded-3xl border border-white/70 bg-white/85 p-4 shadow-lg backdrop-blur">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <p className="text-sm font-semibold uppercase tracking-wide text-sky-700">Dictionary</p>
@@ -708,7 +920,7 @@ function App() {
               </button>
             </div>
 
-            <div className="mt-5 grid gap-3 md:grid-cols-4">
+            <div className="mt-3 grid gap-2 md:grid-cols-4">
               <input
                 type="text"
                 value={dictionaryQuery}
@@ -739,10 +951,10 @@ function App() {
               </label>
             </div>
 
-            <p className="mt-3 text-sm text-slate-600">Showing {filteredDictionaryKanji.length} kanji</p>
+            <p className="mt-2 text-sm text-slate-600">Showing {filteredDictionaryKanji.length} kanji</p>
 
-            <div className="mt-4 grid gap-4 lg:grid-cols-[1.6fr_1fr]">
-              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="mt-3 grid gap-3 lg:grid-cols-[1.6fr_1fr]">
+              <div className="rounded-2xl border border-slate-200 bg-white p-3">
                 <div className="grid grid-cols-5 gap-2 md:grid-cols-8 lg:grid-cols-10">
                   {filteredDictionaryKanji.map((kanji) => (
                     <button
@@ -761,7 +973,7 @@ function App() {
                 </div>
               </div>
 
-              <div className="rounded-2xl border border-slate-200 bg-white p-5">
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
                 {!selectedDictionaryKanji && <p className="text-sm text-slate-600">No kanji matches current filters.</p>}
                 {selectedDictionaryKanji && (
                   <>
@@ -770,14 +982,18 @@ function App() {
                     <p className="mt-1 text-sm text-slate-600">{selectedDictionaryKanji.meanings.join(", ")}</p>
 
                     <dl className="mt-4 space-y-2 text-sm">
-                      <div className="flex justify-between gap-3">
-                        <dt className="text-slate-500">On reading</dt>
-                        <dd className="font-semibold text-slate-800">{selectedDictionaryKanji.onyomi.join(", ") || "-"}</dd>
-                      </div>
-                      <div className="flex justify-between gap-3">
-                        <dt className="text-slate-500">Kun reading</dt>
-                        <dd className="font-semibold text-slate-800">{selectedDictionaryKanji.kunyomi.join(", ") || "-"}</dd>
-                      </div>
+                      {settings.showFurigana && (
+                        <>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-slate-500">On reading</dt>
+                            <dd className="font-semibold text-slate-800">{formatReadings(selectedDictionaryKanji.onyomi, settings.showRomaji)}</dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-slate-500">Kun reading</dt>
+                            <dd className="font-semibold text-slate-800">{formatReadings(selectedDictionaryKanji.kunyomi, settings.showRomaji)}</dd>
+                          </div>
+                        </>
+                      )}
                       <div className="flex justify-between gap-3">
                         <dt className="text-slate-500">Radical</dt>
                         <dd className="font-semibold text-slate-800">{selectedDictionaryKanji.radical}</dd>
@@ -800,6 +1016,16 @@ function App() {
                         </span>
                       ))}
                     </div>
+
+                    {selectedDictionaryProgress && (
+                      <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Mastery Status</p>
+                        <p className="mt-1 text-sm font-semibold text-slate-900">{selectedDictionaryProgress.status}</p>
+                        <p className="text-xs text-slate-600">
+                          Streak: {selectedDictionaryProgress.consecutiveCorrect}/5, Accuracy: {accuracyPercent(selectedDictionaryProgress)}%
+                        </p>
+                      </div>
+                    )}
                   </>
                 )}
               </div>
@@ -808,7 +1034,7 @@ function App() {
         )}
 
         {screen === "progress" && (
-          <section className="rounded-3xl border border-white/70 bg-white/85 p-6 shadow-lg backdrop-blur">
+          <section className="rounded-3xl border border-white/70 bg-white/85 p-4 shadow-lg backdrop-blur">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <p className="text-sm font-semibold uppercase tracking-wide text-emerald-700">Progress</p>
@@ -823,7 +1049,7 @@ function App() {
               </button>
             </div>
 
-            <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
               <article className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
                 <p className="text-xs uppercase tracking-wide text-emerald-700">Current Streak</p>
                 <p className="mt-2 text-3xl font-bold text-emerald-950">{overallStats.currentStreak}</p>
@@ -842,12 +1068,12 @@ function App() {
               </article>
             </div>
 
-            <div className="mt-6 grid gap-4 lg:grid-cols-2">
-              <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="mt-3 grid gap-3 lg:grid-cols-2">
+              <article className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
                 <h3 className="text-lg font-semibold text-slate-900">Weakest Kanji</h3>
                 {weakKanji.length === 0 && <p className="mt-2 text-sm text-slate-600">No misses recorded yet.</p>}
                 {weakKanji.length > 0 && (
-                  <ul className="mt-2 space-y-2 text-sm text-slate-700">
+                  <ul className="mt-2 space-y-1 text-sm text-slate-700">
                     {weakKanji.map(({ row, kanji }) => (
                       <li key={row.kanjiId} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2">
                         <span className="text-2xl font-bold text-slate-900">{kanji?.character}</span>
@@ -859,11 +1085,11 @@ function App() {
                 )}
               </article>
 
-              <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <article className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
                 <h3 className="text-lg font-semibold text-slate-900">Strongest Kanji</h3>
                 {strongKanji.length === 0 && <p className="mt-2 text-sm text-slate-600">No wins recorded yet.</p>}
                 {strongKanji.length > 0 && (
-                  <ul className="mt-2 space-y-2 text-sm text-slate-700">
+                  <ul className="mt-2 space-y-1 text-sm text-slate-700">
                     {strongKanji.map(({ row, kanji }) => (
                       <li key={row.kanjiId} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2">
                         <span className="text-2xl font-bold text-slate-900">{kanji?.character}</span>
@@ -873,6 +1099,100 @@ function App() {
                     ))}
                   </ul>
                 )}
+              </article>
+            </div>
+          </section>
+        )}
+
+        {screen === "settings" && (
+          <section className="rounded-3xl border border-white/70 bg-white/85 p-4 shadow-lg backdrop-blur">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-wide text-violet-700">Settings</p>
+                <h2 className="mt-1 text-3xl font-bold text-slate-900">Study Preferences</h2>
+              </div>
+              <button
+                type="button"
+                onClick={returnToDashboard}
+                className="rounded-full bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition hover:bg-slate-700"
+              >
+                Back To Base Camp
+              </button>
+            </div>
+
+            <div className="mt-4 grid gap-3 lg:grid-cols-2">
+              <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <h3 className="text-lg font-semibold text-slate-900">Reading Display</h3>
+                <div className="mt-3 space-y-2">
+                  <label className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                    <span className="text-sm font-medium text-slate-800">Show Furigana Readings</span>
+                    <input
+                      type="checkbox"
+                      checked={settings.showFurigana}
+                      onChange={(event) => {
+                        const checked = event.currentTarget.checked;
+                        setSettings((previous) => ({ ...previous, showFurigana: checked }));
+                      }}
+                      className="h-5 w-5 accent-violet-700"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                    <span className="text-sm font-medium text-slate-800">Show Romaji</span>
+                    <input
+                      type="checkbox"
+                      checked={settings.showRomaji}
+                      onChange={(event) => {
+                        const checked = event.currentTarget.checked;
+                        setSettings((previous) => ({ ...previous, showRomaji: checked }));
+                      }}
+                      disabled={!settings.showFurigana}
+                      className="h-5 w-5 accent-violet-700 disabled:opacity-50"
+                    />
+                  </label>
+
+                  {!settings.showFurigana && (
+                    <p className="text-xs text-slate-500">Enable furigana first to show romaji.</p>
+                  )}
+                </div>
+              </article>
+
+              <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <h3 className="text-lg font-semibold text-slate-900">Accessibility</h3>
+                <div className="mt-3 space-y-2">
+                  <label className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                    <span className="text-sm font-medium text-slate-800">Reduced Motion</span>
+                    <input
+                      type="checkbox"
+                      checked={settings.reducedMotion}
+                      onChange={(event) => {
+                        const checked = event.currentTarget.checked;
+                        setSettings((previous) => ({ ...previous, reducedMotion: checked }));
+                      }}
+                      className="h-5 w-5 accent-violet-700"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                    <span className="text-sm font-medium text-slate-800">Text Size</span>
+                    <select
+                      value={settings.textScale}
+                      onChange={(event) => {
+                        const nextScale = Number(event.currentTarget.value) as TextScale;
+                        setSettings((previous) => ({
+                          ...previous,
+                          textScale: nextScale,
+                        }));
+                      }}
+                      className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-sm"
+                    >
+                      <option value={90}>Compact</option>
+                      <option value={100}>Default</option>
+                      <option value={110}>Large</option>
+                      <option value={125}>Extra Large</option>
+                    </select>
+                  </label>
+                </div>
               </article>
             </div>
           </section>

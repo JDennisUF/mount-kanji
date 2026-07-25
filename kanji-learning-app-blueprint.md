@@ -1172,22 +1172,22 @@ Use this checklist to track implementation progress as we build Mount Kanji.
 - [x] Implement database initialization and repository layer.
 - [x] Add seed import pipeline for 100 JLPT N5 kanji.
 - [x] Add lesson data for first 20 structured lessons.
-- [ ] Build Home -> Lesson -> Quiz -> Review flow end-to-end.
+- [x] Build Home -> Lesson -> Quiz -> Review flow end-to-end.
 - [x] Persist quiz attempts and progress updates in SQLite.
 - [x] Implement review queue using Again/Hard/Good/Easy grading.
-- [ ] Enforce mastery rule: 5 correct meaning reviews and 80%+ accuracy.
+- [x] Enforce mastery rule: 5 correct meaning reviews and 80%+ accuracy.
 
 ## MVP Features
 
 - [x] Build Kanji Detail screen (meanings, readings, radicals, examples).
 - [x] Build Dictionary/Search (kanji, meaning, radical, JLPT, sumo relevance).
 - [x] Build Progress screen (streaks, mastered count, weak kanji, accuracy).
-- [ ] Add settings: furigana default on, romaji optional toggle.
-- [ ] Add accessibility controls: text size, reduced motion, contrast-safe feedback.
+- [x] Add settings: furigana default on, romaji optional toggle.
+- [x] Add accessibility controls: text size, reduced motion, contrast-safe feedback.
 
 ## Sumo Content (MVP Data + Phase 2 Interactions)
 
-- [ ] Add curated sumo seed content (25 terms + 10 rank names).
+- [x] Add curated sumo seed content (25 terms + 10 rank names).
 - [ ] Tag sumo-relevant kanji and vocabulary in data.
 - [ ] Phase 2: build Sumo Hub interactive modes (rank trainer, banzuke trainer, shikona explorer, broadcast recognition).
 
