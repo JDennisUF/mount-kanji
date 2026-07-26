@@ -16,6 +16,7 @@ Web-only kanji learning app with a mountain-progression theme, built with React,
 - Frontend: React + TypeScript + Vite
 - Styling: Tailwind CSS v4
 - Data: `localStorage`
+- Hosting target: GitHub Pages at `/mount-kanji/`
 
 ## Run
 
@@ -33,9 +34,22 @@ Web-only kanji learning app with a mountain-progression theme, built with React,
 
 The output is written to `dist/` and is ready for GitHub Pages deployment.
 
+4. Run the test suite:
+
+	npm run test
+
 ## GitHub Pages
 
-A GitHub Actions workflow is included at `.github/workflows/deploy-pages.yml`. Enable GitHub Pages in the repository settings and set the source to GitHub Actions.
+A GitHub Actions workflow is included at `.github/workflows/deploy-pages.yml`.
+
+To publish from this repository:
+
+1. Ensure the default branch is `main`, or update the workflow branch list if it is not.
+2. In GitHub, open `Settings -> Pages`.
+3. Set the source to `GitHub Actions`.
+4. Push to `main` or trigger the workflow manually from the `Actions` tab.
+
+The Vite base path is configured for hosting at `https://<user>.github.io/mount-kanji/`. If the repository name changes, update `base` in `vite.config.ts`.
 
 ## Next Implementation Targets
 

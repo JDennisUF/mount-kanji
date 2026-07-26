@@ -737,18 +737,18 @@ Possible fonts:
 
 ## Recommended Initial Stack
 
-A practical cross-platform option:
+A practical web-first option:
 
 - **Frontend:** React + TypeScript
-- **Desktop shell:** Tauri
+- **Build tool:** Vite
 - **Styling:** Tailwind CSS
-- **Local database:** SQLite
-- **State management:** Zustand or React Context
-- **Testing:** Vitest + Playwright
-- **Backend:** Optional for MVP
+- **Local persistence:** Browser `localStorage`
+- **State management:** React state with targeted helpers
+- **Testing:** Vitest
+- **Backend:** None for MVP
 - **Cloud sync later:** Supabase or a custom API
 
-A local-first application is suitable because lessons and reviews should work offline.
+A local-first browser application is suitable because lessons and reviews should work offline and deploy cleanly to GitHub Pages.
 
 ## Suggested Application Layers
 
@@ -761,7 +761,7 @@ Spaced-Repetition Engine
     ↓
 Repositories
     ↓
-SQLite Database
+Browser Storage
 ```
 
 ## Suggested Project Structure
@@ -841,7 +841,7 @@ The first release should stay small.
 - Progress tracking
 - 25 essential sumo terms
 - 10 sumo rank names
-- Local SQLite storage
+- Local browser storage
 - Dark and light themes
 
 ### Do Not Include in the First Release
@@ -865,7 +865,7 @@ These features can distract from proving whether the core learning loop works.
 
 - Create project
 - Define TypeScript models
-- Set up SQLite
+- Set up browser persistence
 - Import first 100 kanji
 - Build kanji detail screen
 - Build collection browser
@@ -1157,23 +1157,23 @@ Use this checklist to track implementation progress as we build Mount Kanji.
 
 ## Foundation (Current)
 
-- [x] Scaffold project in repo root with Tauri + React + TypeScript.
+- [x] Scaffold project in repo root with React + TypeScript + Vite.
 - [x] Install dependencies and verify production build succeeds.
 - [x] Set up Tailwind CSS (v4 Vite plugin).
 - [x] Replace starter template with Mount Kanji Base Camp dashboard shell.
 - [x] Add initial TypeScript domain types for kanji, lessons, quiz, and progress.
-- [x] Add initial SQLite schema draft.
+- [x] Add initial local persistence model for quiz attempts and progress.
 - [x] Add first spaced-repetition service and review scheduler service.
 - [x] Add unit test setup (Vitest) and first scheduler tests.
 - [x] Add first interactive prototype flow: dashboard -> lesson -> quiz -> summary.
 
 ## MVP Core Loop
 
-- [x] Implement database initialization and repository layer.
+- [x] Implement repository layer and browser persistence.
 - [x] Add seed import pipeline for 100 JLPT N5 kanji.
 - [x] Add lesson data for first 20 structured lessons.
 - [x] Build Home -> Lesson -> Quiz -> Review flow end-to-end.
-- [x] Persist quiz attempts and progress updates in SQLite.
+- [x] Persist quiz attempts and progress updates in `localStorage`.
 - [x] Implement review queue using Again/Hard/Good/Easy grading.
 - [x] Enforce mastery rule: 5 correct meaning reviews and 80%+ accuracy.
 
@@ -1196,10 +1196,10 @@ Use this checklist to track implementation progress as we build Mount Kanji.
 - [ ] Add repository and progress-service unit tests.
 - [ ] Add integration tests for lesson-to-review lifecycle.
 - [ ] Add Playwright happy-path tests for study flow.
-- [ ] Verify app behavior in desktop shell once Linux prerequisites are installed.
+- [ ] Verify deployed behavior on GitHub Pages.
 
 ## Release Readiness
 
 - [ ] Verify licensing and attribution requirements for language datasets.
 - [ ] Freeze MVP scope and defer non-MVP items.
-- [ ] Ship first local-first desktop MVP.
+- [ ] Ship first local-first web MVP on GitHub Pages.
