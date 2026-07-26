@@ -15,5 +15,3 @@ export interface QuizAttempt {
   responseTimeMs: number;
   answeredAt: string;
 }
-
-export type ReviewGrade = "again" | "hard" | "good" | "easy";

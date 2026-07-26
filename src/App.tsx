@@ -5,7 +5,7 @@ import { beginnerKanjiPool } from "./data/seed/beginnerSet";
 import { seedLessons } from "./data/seed/lessonCatalog";
 import { sumoTerms, type SumoTerm } from "./data/seed/sumoTerms";
 import { createProgressRepository } from "./repositories/progressRepositoryFactory";
-import { ReviewScheduler } from "./services/reviewScheduler";
+import { ReviewTracker, resolveKanjiStatus } from "./services/reviewTracker";
 import type { ProgressRepository } from "./repositories/progressRepository";
 import type { Kanji, QuizAttempt, UserKanjiProgress } from "./types";
 
@@ -30,7 +30,8 @@ interface QuizQuestion {
 const SESSION_TARGET_MINUTES = "5-10";
 const LESSON_CURSOR_STORAGE_KEY = "mount-kanji-lesson-cursor";
 const SETTINGS_STORAGE_KEY = "mount-kanji-settings";
-const TOTAL_KANJI_COUNT = beginnerKanjiPool.length;
+const TRAIL_BATCH_SIZE = 5;
+const REVIEW_TRAIL_INSERTS = 2;
 
 type TextScale = 90 | 100 | 110 | 125;
 
@@ -50,7 +51,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   textScale: 100,
 };
 
-const scheduler = new ReviewScheduler();
+const reviewTracker = new ReviewTracker();
 
 const kanjiById = new Map(beginnerKanjiPool.map((kanji) => [kanji.id, kanji]));
 
@@ -87,18 +88,67 @@ function createDefaultProgress(kanjiId: string): UserKanjiProgress {
     id: `progress_${kanjiId}`,
     kanjiId,
     status: "new",
-    easeFactor: 2.5,
-    intervalDays: 0,
-    nextReviewAt: null,
     correctCount: 0,
     incorrectCount: 0,
-    consecutiveCorrect: 0,
+    currentStreak: 0,
+    bestStreak: 0,
+    reviewWeight: 0,
+    excludedFromLessons: false,
+    lastAnsweredCorrect: null,
     lastReviewedAt: null,
-    meaningStatus: "new",
-    meaningEaseFactor: 2.5,
-    readingStatus: "new",
-    readingEaseFactor: 2.5,
   };
+}
+
+function normalizeProgressRow(
+  kanjiId: string,
+  raw?: Partial<UserKanjiProgress> & {
+    status?: string;
+    consecutiveCorrect?: number;
+  },
+): UserKanjiProgress {
+  const base = createDefaultProgress(kanjiId);
+  const correctCount = typeof raw?.correctCount === "number" ? raw.correctCount : 0;
+  const incorrectCount = typeof raw?.incorrectCount === "number" ? raw.incorrectCount : 0;
+  const currentStreak =
+    typeof raw?.currentStreak === "number"
+      ? raw.currentStreak
+      : typeof raw?.consecutiveCorrect === "number"
+        ? raw.consecutiveCorrect
+        : 0;
+  const bestStreak = typeof raw?.bestStreak === "number" ? raw.bestStreak : currentStreak;
+  const reviewWeight =
+    typeof raw?.reviewWeight === "number"
+      ? raw.reviewWeight
+      : (raw?.status as string | undefined) === "needs_review"
+        ? 3
+        : 0;
+
+  return {
+    ...base,
+    ...raw,
+    kanjiId,
+    id: typeof raw?.id === "string" ? raw.id : base.id,
+    status: resolveKanjiStatus(correctCount, incorrectCount, currentStreak),
+    correctCount,
+    incorrectCount,
+    currentStreak,
+    bestStreak,
+    reviewWeight,
+    excludedFromLessons: Boolean(raw?.excludedFromLessons),
+    lastAnsweredCorrect: typeof raw?.lastAnsweredCorrect === "boolean" ? raw.lastAnsweredCorrect : null,
+    lastReviewedAt: typeof raw?.lastReviewedAt === "string" ? raw.lastReviewedAt : null,
+  };
+}
+
+function uniqueByKanjiId(rows: UserKanjiProgress[]): UserKanjiProgress[] {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    if (seen.has(row.kanjiId)) {
+      return false;
+    }
+    seen.add(row.kanjiId);
+    return true;
+  });
 }
 
 function toUtcDateKey(input: string): string {
@@ -236,7 +286,10 @@ function App() {
         repository.loadQuizAttempts(),
       ]);
       if (isActive) {
-        setProgressByKanji(loadedProgress);
+        const normalizedProgress = Object.fromEntries(
+          Object.entries(loadedProgress).map(([kanjiId, row]) => [kanjiId, normalizeProgressRow(kanjiId, row)]),
+        );
+        setProgressByKanji(normalizedProgress);
         setQuizAttempts(loadedAttempts);
         setIsProgressHydrated(true);
       }
@@ -273,9 +326,15 @@ function App() {
 
   const overallStats = useMemo(() => {
     const rows = Object.values(progressByKanji);
-    const learned = rows.filter((row) => row.correctCount + row.incorrectCount > 0).length;
-    const mastered = rows.filter((row) => row.status === "mastered").length;
-    const due = scheduler.getDue(rows).length;
+    const activeKanjiIds = new Set(
+      beginnerKanjiPool
+        .filter((kanji) => !(progressByKanji[kanji.id]?.excludedFromLessons ?? false))
+        .map((kanji) => kanji.id),
+    );
+    const activeRows = rows.filter((row) => activeKanjiIds.has(row.kanjiId));
+    const learned = activeRows.filter((row) => row.correctCount + row.incorrectCount > 0).length;
+    const mastered = activeRows.filter((row) => row.status === "mastered").length;
+    const due = reviewTracker.getQueue(rows).length;
     const totalCorrect = rows.reduce((sum, row) => sum + row.correctCount, 0);
     const totalAttempts = rows.reduce((sum, row) => sum + row.correctCount + row.incorrectCount, 0);
     const accuracy = totalAttempts > 0 ? Math.round((totalCorrect / totalAttempts) * 100) : 0;
@@ -294,6 +353,11 @@ function App() {
   const currentLessonKanji = activeLessonKanji[lessonIndex];
   const currentQuestion = quizQuestions[quizIndex];
   const recentAttempts = quizAttempts.slice(0, 5);
+  const activeTrailKanji = useMemo(() => {
+    return beginnerKanjiPool.filter((kanji) => !(progressByKanji[kanji.id]?.excludedFromLessons ?? false));
+  }, [progressByKanji]);
+  const totalTrailKanjiCount = activeTrailKanji.length;
+  const trailLessonCount = Math.max(1, Math.ceil(Math.max(1, totalTrailKanjiCount) / TRAIL_BATCH_SIZE));
   const averageResponseMs =
     quizAttempts.length > 0
       ? Math.round(quizAttempts.reduce((sum, attempt) => sum + attempt.responseTimeMs, 0) / quizAttempts.length)
@@ -360,7 +424,9 @@ function App() {
     const selected = filteredDictionaryKanji.find((kanji) => kanji.id === selectedKanjiId);
     return selected ?? filteredDictionaryKanji[0] ?? null;
   }, [filteredDictionaryKanji, selectedKanjiId]);
-  const selectedDictionaryProgress = selectedDictionaryKanji ? progressByKanji[selectedDictionaryKanji.id] : null;
+  const selectedDictionaryProgress = selectedDictionaryKanji
+    ? progressByKanji[selectedDictionaryKanji.id] ?? createDefaultProgress(selectedDictionaryKanji.id)
+    : null;
 
   const filteredSumoTerms = useMemo(() => {
     const query = sumoQuery.trim().toLowerCase();
@@ -382,13 +448,51 @@ function App() {
     });
   }, [sumoCategory, sumoQuery]);
 
+  function buildLessonSegment(startOffset: number): Kanji[] {
+    if (activeTrailKanji.length === 0) {
+      return [];
+    }
+
+    const priorityKanji = activeTrailKanji
+      .filter((kanji) => (progressByKanji[kanji.id]?.reviewWeight ?? 0) > 0)
+      .sort((a, b) => {
+        const aProgress = progressByKanji[a.id] ?? createDefaultProgress(a.id);
+        const bProgress = progressByKanji[b.id] ?? createDefaultProgress(b.id);
+
+        if (bProgress.reviewWeight !== aProgress.reviewWeight) {
+          return bProgress.reviewWeight - aProgress.reviewWeight;
+        }
+
+        return bProgress.incorrectCount - aProgress.incorrectCount;
+      })
+      .slice(0, REVIEW_TRAIL_INSERTS);
+
+    const picked = [...priorityKanji];
+    for (let i = 0; picked.length < Math.min(TRAIL_BATCH_SIZE, activeTrailKanji.length) && i < activeTrailKanji.length; i += 1) {
+      const index = (startOffset + i) % activeTrailKanji.length;
+      const kanji = activeTrailKanji[index];
+      if (!picked.some((item) => item.id === kanji.id)) {
+        picked.push(kanji);
+      }
+    }
+
+    return picked;
+  }
+
   function startLesson() {
+    if (activeTrailKanji.length === 0) {
+      setReviewFeedback("All kanji are currently excluded from future trails.");
+      setScreen("dashboard");
+      return;
+    }
+
+    const lessonCount = Math.max(1, Math.ceil(Math.max(1, activeTrailKanji.length) / TRAIL_BATCH_SIZE));
     const lessonDefinition = seedLessons[lessonCursor];
-    const lessonSegment = lessonDefinition ? resolveLessonKanji(lessonDefinition.kanjiIds) : [];
-    const nextCursor = (lessonCursor + 1) % Math.max(1, seedLessons.length);
+    const lessonSegment = buildLessonSegment(lessonCursor * TRAIL_BATCH_SIZE);
+    const nextCursor = (lessonCursor + 1) % lessonCount;
 
     setActiveLessonKanji(lessonSegment);
-    setActiveLessonTitle(lessonDefinition?.title ?? "Beginner Lesson");
+    setActiveLessonTitle(lessonDefinition?.title ?? `Trail Lesson ${lessonCursor + 1}`);
     setLessonCursor(nextCursor);
     setScreen("lesson");
     setLessonIndex(0);
@@ -402,13 +506,10 @@ function App() {
   }
 
   function startReviewQueue(seedKanjiIds: string[] = []) {
-    const rows = Object.values(progressByKanji);
-    const due = scheduler.getDue(rows);
-    const urgentNeedsReview = rows.filter((row) => row.status === "needs_review" && !due.some((item) => item.kanjiId === row.kanjiId));
     const seeded = seedKanjiIds
       .map((kanjiId) => progressByKanji[kanjiId] ?? createDefaultProgress(kanjiId))
-      .filter((row) => !urgentNeedsReview.some((item) => item.kanjiId === row.kanjiId) && !due.some((item) => item.kanjiId === row.kanjiId));
-    const queue = [...seeded, ...urgentNeedsReview, ...due];
+      .filter((row) => !row.excludedFromLessons);
+    const queue = uniqueByKanjiId([...seeded, ...reviewTracker.getQueue(Object.values(progressByKanji))]);
 
     setReviewQueue(queue);
     setReviewDoneCount(0);
@@ -467,7 +568,7 @@ function App() {
 
     setProgressByKanji((previous) => {
       const currentProgress = previous[currentQuestion.kanjiId] ?? createDefaultProgress(currentQuestion.kanjiId);
-      const updated = scheduler.applyReview(currentProgress, isCorrect ? "good" : "again");
+      const updated = reviewTracker.applyResult(currentProgress, isCorrect);
       return {
         ...previous,
         [currentQuestion.kanjiId]: updated,
@@ -503,13 +604,13 @@ function App() {
     setLastAnswerCorrect(null);
   }
 
-  function applyReviewGrade(grade: "again" | "hard" | "good" | "easy") {
+  function applyReviewResult(correct: boolean) {
     if (!currentReviewProgress) {
       return;
     }
 
     const activeProgress = progressByKanji[currentReviewProgress.kanjiId] ?? currentReviewProgress;
-    const updatedProgress = scheduler.applyReview(activeProgress, grade);
+    const updatedProgress = reviewTracker.applyResult(activeProgress, correct);
 
     setProgressByKanji((previous) => {
       return {
@@ -519,13 +620,30 @@ function App() {
     });
 
     setReviewDoneCount((count) => count + 1);
-    const masteryNote = updatedProgress.status === "mastered" ? " Mastered!" : "";
-    setReviewFeedback(`Marked ${grade.toUpperCase()} for ${currentReviewKanji?.character ?? "kanji"}.${masteryNote}`);
+    setReviewFeedback(
+      `${correct ? "Logged a hit" : "Logged a miss"} for ${currentReviewKanji?.character ?? "kanji"}. Review weight is now ${updatedProgress.reviewWeight}.`,
+    );
     setReviewQueue((queue) => queue.slice(1));
   }
 
+  function setKanjiExcluded(kanjiId: string, excludedFromLessons: boolean) {
+    setProgressByKanji((previous) => {
+      const currentProgress = previous[kanjiId] ?? createDefaultProgress(kanjiId);
+      return {
+        ...previous,
+        [kanjiId]: {
+          ...currentProgress,
+          excludedFromLessons,
+          reviewWeight: excludedFromLessons ? 0 : currentProgress.reviewWeight,
+        },
+      };
+    });
+
+    setReviewQueue((queue) => queue.filter((row) => row.kanjiId !== kanjiId || !excludedFromLessons));
+  }
+
   const trails = [
-    { name: "Beginner Trail", progress: `${overallStats.learned} / ${TOTAL_KANJI_COUNT} kanji`, focus: "Core recognition" },
+    { name: "Beginner Trail", progress: `${overallStats.learned} / ${totalTrailKanjiCount} kanji`, focus: "Core recognition" },
     { name: "Radicals Trail", progress: "Locked for phase 2", focus: "Pattern clues" },
     { name: "Sumo Trail", progress: "Content loading next", focus: "Ranks and match terms" },
   ];
@@ -571,8 +689,8 @@ function App() {
                 <div className="flex flex-wrap items-center gap-2">
                   <h2 className="text-lg font-bold text-slate-900">Trails</h2>
                   <p className="text-sm text-slate-600">
-                    Next lesson: {seedLessons[lessonCursor]?.title ?? "Beginner Lesson"} ({(lessonCursor % seedLessons.length) + 1}/
-                    {seedLessons.length})
+                    Next lesson: {seedLessons[lessonCursor]?.title ?? "Beginner Lesson"} ({(lessonCursor % trailLessonCount) + 1}/
+                    {trailLessonCount})
                   </p>
                 </div>
               </div>
@@ -741,9 +859,9 @@ function App() {
             <p className="text-sm font-semibold uppercase tracking-wide text-violet-700">Session Summary</p>
             <h2 className="mt-2 text-3xl font-bold text-slate-900">Trail Segment Complete</h2>
             <p className="mt-3 text-slate-700">
-              You answered {quizScore} out of {quizQuestions.length} correctly and updated your review schedule.
+              You answered {quizScore} out of {quizQuestions.length} correctly and updated each kanji's hit, miss, and review weight.
             </p>
-            <p className="mt-1 text-sm text-slate-600">Mastery unlock rule: 5 correct in a row and at least 80% accuracy.</p>
+            <p className="mt-1 text-sm text-slate-600">Wrong answers raise review weight. Correct answers lower it and build streaks.</p>
 
             <div className="mt-3 grid gap-3 sm:grid-cols-3">
               <article className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -850,7 +968,7 @@ function App() {
         {screen === "review" && (
           <section className="rounded-3xl border border-white/70 bg-white/85 p-4 shadow-lg backdrop-blur">
             <p className="text-sm font-semibold uppercase tracking-wide text-amber-700">Review Queue</p>
-            <h2 className="mt-2 text-3xl font-bold text-slate-900">Keep The Trail Fresh</h2>
+            <h2 className="mt-2 text-3xl font-bold text-slate-900">Trouble Spot Review</h2>
 
             {!currentReviewKanji && (
               <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
@@ -876,37 +994,23 @@ function App() {
                       Kun: {formatReadings(currentReviewKanji.kunyomi, settings.showRomaji)} | On: {formatReadings(currentReviewKanji.onyomi, settings.showRomaji)}
                     </p>
                   )}
-                  <p className="mt-2 text-sm text-slate-600">Pick how well this felt so we can schedule the next review.</p>
+                  <p className="mt-2 text-sm text-slate-600">Mark whether you got it or missed it. Misses raise review weight so this kanji comes back sooner.</p>
                 </div>
 
-                <div className="mt-3 grid gap-2 sm:grid-cols-4">
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
                   <button
                     type="button"
-                    onClick={() => applyReviewGrade("again")}
+                    onClick={() => applyReviewResult(false)}
                     className="rounded-xl bg-rose-600 px-4 py-3 text-sm font-semibold text-white hover:bg-rose-500"
                   >
-                    Again
+                    Missed It
                   </button>
                   <button
                     type="button"
-                    onClick={() => applyReviewGrade("hard")}
-                    className="rounded-xl bg-amber-600 px-4 py-3 text-sm font-semibold text-white hover:bg-amber-500"
-                  >
-                    Hard
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => applyReviewGrade("good")}
+                    onClick={() => applyReviewResult(true)}
                     className="rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-500"
                   >
-                    Good
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => applyReviewGrade("easy")}
-                    className="rounded-xl bg-sky-600 px-4 py-3 text-sm font-semibold text-white hover:bg-sky-500"
-                  >
-                    Easy
+                    Got It
                   </button>
                 </div>
 
@@ -1035,11 +1139,25 @@ function App() {
 
                     {selectedDictionaryProgress && (
                       <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Mastery Status</p>
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Study Status</p>
                         <p className="mt-1 text-sm font-semibold text-slate-900">{selectedDictionaryProgress.status}</p>
                         <p className="text-xs text-slate-600">
-                          Streak: {selectedDictionaryProgress.consecutiveCorrect}/5, Accuracy: {accuracyPercent(selectedDictionaryProgress)}%
+                          Current streak: {selectedDictionaryProgress.currentStreak}, Best streak: {selectedDictionaryProgress.bestStreak}
                         </p>
+                        <p className="text-xs text-slate-600">Review weight: {selectedDictionaryProgress.reviewWeight}, Accuracy: {accuracyPercent(selectedDictionaryProgress)}%</p>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setKanjiExcluded(selectedDictionaryKanji.id, !selectedDictionaryProgress.excludedFromLessons)
+                          }
+                          className={`mt-3 w-full rounded-xl px-3 py-2 text-sm font-semibold transition ${
+                            selectedDictionaryProgress.excludedFromLessons
+                              ? "border border-emerald-700 bg-emerald-50 text-emerald-900 hover:bg-emerald-100"
+                              : "border border-rose-700 bg-rose-50 text-rose-900 hover:bg-rose-100"
+                          }`}
+                        >
+                          {selectedDictionaryProgress.excludedFromLessons ? "Include In Future Trails" : "Exclude From Future Trails"}
+                        </button>
                       </div>
                     )}
                   </>

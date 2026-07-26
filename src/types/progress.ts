@@ -1,20 +1,17 @@
-export type KanjiStatus = "new" | "learning" | "familiar" | "mastered" | "needs_review";
+export type KanjiStatus = "new" | "learning" | "familiar" | "mastered";
 
 export interface UserKanjiProgress {
   id: string;
   kanjiId: string;
   status: KanjiStatus;
-  easeFactor: number;
-  intervalDays: number;
-  nextReviewAt: string | null;
   correctCount: number;
   incorrectCount: number;
-  consecutiveCorrect: number;
+  currentStreak: number;
+  bestStreak: number;
+  reviewWeight: number;
+  excludedFromLessons: boolean;
+  lastAnsweredCorrect: boolean | null;
   lastReviewedAt: string | null;
-  meaningStatus: KanjiStatus;
-  meaningEaseFactor: number;
-  readingStatus: KanjiStatus;
-  readingEaseFactor: number;
 }
 
 export interface UserStats {

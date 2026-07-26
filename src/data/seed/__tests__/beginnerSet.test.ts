@@ -23,4 +23,13 @@ describe("seed kanji dataset", () => {
     expect(counts.N4).toBe(145);
     expect(counts.N3).toBe(367);
   });
+
+  it("marks sumo-relevant JLPT kanji with the sumo tag", () => {
+    const sumoKanji = beginnerKanjiPool.filter((kanji) => kanji.sumoRelevant);
+
+    expect(sumoKanji.length).toBe(207);
+    expect(sumoKanji.every((kanji) => kanji.tags.includes("sumo"))).toBe(true);
+    expect(sumoKanji.some((kanji) => kanji.character === "横")).toBe(true);
+    expect(sumoKanji.some((kanji) => kanji.character === "勝")).toBe(true);
+  });
 });

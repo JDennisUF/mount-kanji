@@ -1,5 +1,6 @@
 import type { Kanji } from "../../types";
 import { jlptSupplementRows } from "./jlptSupplement";
+import { sumoKanjiCharacterSet } from "./sumoKanjiCharacters";
 
 type SeedRow = {
   character: string;
@@ -151,7 +152,17 @@ const n5SeedRows: SeedRow[] = [
 
 const N5_MVP_COUNT = 100;
 
+function withSumoMetadata(row: SeedRow | (typeof jlptSupplementRows)[number], baseTags: string[]) {
+  const isSumo = sumoKanjiCharacterSet.has(row.character) || row.sumoRelevant === true;
+
+  return {
+    sumoRelevant: isSumo,
+    tags: isSumo && !baseTags.includes("sumo") ? [...baseTags, "sumo"] : baseTags,
+  };
+}
+
 const n5KanjiPool: Kanji[] = n5SeedRows.slice(0, N5_MVP_COUNT).map((row, index) => ({
+  ...withSumoMetadata(row, ["beginner", "n5", ...row.tags]),
   id: `kanji_n5_${String(index + 1).padStart(3, "0")}`,
   character: row.character,
   primaryMeaning: row.primaryMeaning,
@@ -161,8 +172,6 @@ const n5KanjiPool: Kanji[] = n5SeedRows.slice(0, N5_MVP_COUNT).map((row, index) 
   strokeCount: row.strokeCount,
   radical: row.radical,
   jlptLevel: "N5",
-  sumoRelevant: row.sumoRelevant ?? false,
-  tags: ["beginner", "n5", ...row.tags],
 }));
 
 const existingCharacters = new Set(n5KanjiPool.map((kanji) => kanji.character));
@@ -170,6 +179,7 @@ const existingCharacters = new Set(n5KanjiPool.map((kanji) => kanji.character));
 const n4SupplementPool: Kanji[] = jlptSupplementRows
   .filter((row) => row.jlptLevel === "N4" && !existingCharacters.has(row.character))
   .map((row, index) => ({
+    ...withSumoMetadata(row, row.tags),
     id: `kanji_n4_${String(index + 1).padStart(3, "0")}`,
     character: row.character,
     primaryMeaning: row.primaryMeaning,
@@ -179,13 +189,12 @@ const n4SupplementPool: Kanji[] = jlptSupplementRows
     strokeCount: row.strokeCount,
     radical: row.radical,
     jlptLevel: "N4" as const,
-    sumoRelevant: row.sumoRelevant ?? false,
-    tags: row.tags,
   }));
 
 const n3SupplementPool: Kanji[] = jlptSupplementRows
   .filter((row) => row.jlptLevel === "N3" && !existingCharacters.has(row.character))
   .map((row, index) => ({
+    ...withSumoMetadata(row, row.tags),
     id: `kanji_n3_${String(index + 1).padStart(3, "0")}`,
     character: row.character,
     primaryMeaning: row.primaryMeaning,
@@ -195,8 +204,6 @@ const n3SupplementPool: Kanji[] = jlptSupplementRows
     strokeCount: row.strokeCount,
     radical: row.radical,
     jlptLevel: "N3" as const,
-    sumoRelevant: row.sumoRelevant ?? false,
-    tags: row.tags,
   }));
 
 export const beginnerKanjiPool: Kanji[] = [...n5KanjiPool, ...n4SupplementPool, ...n3SupplementPool];
