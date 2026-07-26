@@ -4,7 +4,7 @@ import tailwindcss from "@tailwindcss/vite";
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
-  base: "./",
+  base: "/mount-kanji/",
   plugins: [react(), tailwindcss()],
   test: {
     environment: "node",
