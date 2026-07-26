@@ -1,6 +1,6 @@
 # Mount Kanji
 
-Desktop-first kanji learning app with a mountain-progression theme, built with Tauri, React, and TypeScript.
+Web-only kanji learning app with a mountain-progression theme, built with React, TypeScript, and Vite.
 
 ## Current Status
 
@@ -8,15 +8,14 @@ Desktop-first kanji learning app with a mountain-progression theme, built with T
 - Tailwind v4 (via Vite plugin) wired and active.
 - Initial Base Camp dashboard UI implemented.
 - First domain model types added.
-- Initial SQLite schema drafted.
+- Browser storage persistence wired for static hosting.
 - Spaced repetition and review scheduling service foundations added.
 
 ## Stack
 
 - Frontend: React + TypeScript + Vite
-- Desktop shell: Tauri v2
 - Styling: Tailwind CSS v4
-- Data: SQLite (schema in src/data/sql/schema.sql)
+- Data: `localStorage`
 
 ## Run
 
@@ -24,23 +23,23 @@ Desktop-first kanji learning app with a mountain-progression theme, built with T
 
 	npm install
 
-2. Start web dev server:
+2. Start the dev server:
 
 	npm run dev
 
-3. Start desktop app:
+3. Build the static production bundle:
 
-	npm run tauri dev
+	npm run build
 
-## Linux Prerequisites For Tauri
+The output is written to `dist/` and is ready for GitHub Pages deployment.
 
-If desktop build fails, install required packages such as WebKitGTK and librsvg. See:
+## GitHub Pages
 
-https://tauri.app/start/prerequisites/
+A GitHub Actions workflow is included at `.github/workflows/deploy-pages.yml`. Enable GitHub Pages in the repository settings and set the source to GitHub Actions.
 
 ## Next Implementation Targets
 
-1. Add repositories and database initialization flow.
-2. Import first 100 N5 kanji + lessons as seed data.
-3. Build daily lesson and review queue pages.
-4. Add tests for spaced repetition and progress calculations.
+1. Expand lesson content and seed coverage.
+2. Add import/export for learner progress.
+3. Refine review queue pacing and difficulty tuning.
+4. Broaden test coverage around UI flows and persistence.
