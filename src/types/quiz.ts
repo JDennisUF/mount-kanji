@@ -12,6 +12,5 @@ export interface QuizAttempt {
   questionType: QuizType;
   kanjiId: string;
   correct: boolean;
-  responseTimeMs: number;
   answeredAt: string;
 }

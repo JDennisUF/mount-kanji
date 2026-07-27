@@ -64,7 +64,6 @@ CREATE TABLE IF NOT EXISTS quiz_attempt (
   question_type TEXT NOT NULL,
   kanji_id TEXT NOT NULL,
   correct INTEGER NOT NULL,
-  response_time_ms INTEGER NOT NULL,
   answered_at TEXT NOT NULL,
   FOREIGN KEY (kanji_id) REFERENCES kanji (id)
 );

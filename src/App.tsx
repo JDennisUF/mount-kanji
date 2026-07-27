@@ -257,7 +257,6 @@ function App() {
   const [reviewQueue, setReviewQueue] = useState<UserKanjiProgress[]>([]);
   const [progressRepository, setProgressRepository] = useState<ProgressRepository | null>(null);
   const [isProgressHydrated, setIsProgressHydrated] = useState(false);
-  const [questionStartedAtMs, setQuestionStartedAtMs] = useState<number>(Date.now());
   const [lessonCursor, setLessonCursor] = useState<number>(() => {
     const saved = window.localStorage.getItem(LESSON_CURSOR_STORAGE_KEY);
     if (!saved) {
@@ -358,10 +357,6 @@ function App() {
   }, [progressByKanji]);
   const totalTrailKanjiCount = activeTrailKanji.length;
   const trailLessonCount = Math.max(1, Math.ceil(Math.max(1, totalTrailKanjiCount) / TRAIL_BATCH_SIZE));
-  const averageResponseMs =
-    quizAttempts.length > 0
-      ? Math.round(quizAttempts.reduce((sum, attempt) => sum + attempt.responseTimeMs, 0) / quizAttempts.length)
-      : 0;
   const weakKanji = useMemo(() => {
     return Object.values(progressByKanji)
       .filter((row) => row.incorrectCount > 0)
@@ -378,12 +373,6 @@ function App() {
       .map((row) => ({ row, kanji: kanjiById.get(row.kanjiId) }))
       .filter((item) => item.kanji);
   }, [progressByKanji]);
-
-  useEffect(() => {
-    if (screen === "quiz" && currentQuestion) {
-      setQuestionStartedAtMs(Date.now());
-    }
-  }, [currentQuestion, quizIndex, screen]);
 
   const currentReviewProgress = reviewQueue[0];
   const currentReviewKanji = currentReviewProgress ? kanjiById.get(currentReviewProgress.kanjiId) : null;
@@ -553,14 +542,12 @@ function App() {
 
     const isCorrect = option === currentQuestion.correctOption;
     setLastAnswerCorrect(isCorrect);
-    const responseTimeMs = Math.max(250, Date.now() - questionStartedAtMs);
 
     const attempt: QuizAttempt = {
       id: `attempt_${Date.now()}_${currentQuestion.kanjiId}_${quizIndex}`,
       questionType: "kanji_recall",
       kanjiId: currentQuestion.kanjiId,
       correct: isCorrect,
-      responseTimeMs,
       answeredAt: new Date().toISOString(),
     };
 
@@ -757,17 +744,11 @@ function App() {
 
             <div className="mt-3 grid gap-3 lg:grid-cols-2">
               <article className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-                <h3 className="text-sm font-semibold text-slate-900">Study Telemetry</h3>
-                <div className="mt-2 grid grid-cols-3 gap-2">
+                <h3 className="text-sm font-semibold text-slate-900">Study Snapshot</h3>
+                <div className="mt-2 grid grid-cols-2 gap-2">
                   <div className="rounded-xl bg-slate-50 p-2.5">
                     <p className="text-xs uppercase tracking-wide text-slate-500">Attempts</p>
                     <p className="mt-1 text-lg font-bold text-slate-900">{quizAttempts.length}</p>
-                  </div>
-                  <div className="rounded-xl bg-slate-50 p-2.5">
-                    <p className="text-xs uppercase tracking-wide text-slate-500">Avg Response</p>
-                    <p className="mt-1 text-lg font-bold text-slate-900">
-                      {averageResponseMs > 0 ? `${(averageResponseMs / 1000).toFixed(1)}s` : "-"}
-                    </p>
                   </div>
                   <div className="rounded-xl bg-slate-50 p-2.5">
                     <p className="text-xs uppercase tracking-wide text-slate-500">Mastered</p>
@@ -787,7 +768,6 @@ function App() {
                         <li key={attempt.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-1.5">
                           <span className="font-semibold text-slate-900">{kanji?.character ?? "?"}</span>
                           <span>{attempt.correct ? "Correct" : "Miss"}</span>
-                          <span>{(attempt.responseTimeMs / 1000).toFixed(1)}s</span>
                         </li>
                       );
                     })}

@@ -624,7 +624,6 @@ Show:
   "questionType": "meaning_recognition",
   "kanjiId": "kanji_yama",
   "correct": true,
-  "responseTimeMs": 2800,
   "answeredAt": "2026-07-20T12:05:00Z"
 }
 ```
