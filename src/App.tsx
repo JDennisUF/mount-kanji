@@ -90,51 +90,6 @@ const mountainImages: Record<StudyTrack, string> = {
   katakana: mountainStatusKatakana,
 };
 
-const trackArtThemes: Record<
-  StudyTrack,
-  {
-    accent: string;
-    campReachedFill: string;
-    campReachedStroke: string;
-    campPendingFill: string;
-    campPendingStroke: string;
-    climberFill: string;
-    climberStroke: string;
-    climberText: string;
-  }
-> = {
-  kanji: {
-    accent: "#0f766e",
-    campReachedFill: "#06b6d4",
-    campReachedStroke: "#155e75",
-    campPendingFill: "#cbd5e1",
-    campPendingStroke: "#ffffff",
-    climberFill: "#ecfeff",
-    climberStroke: "#155e75",
-    climberText: "#083344",
-  },
-  hiragana: {
-    accent: "#be185d",
-    campReachedFill: "#f43f5e",
-    campReachedStroke: "#9f1239",
-    campPendingFill: "#cbd5e1",
-    campPendingStroke: "#ffffff",
-    climberFill: "#fff1f2",
-    climberStroke: "#9f1239",
-    climberText: "#881337",
-  },
-  katakana: {
-    accent: "#b45309",
-    campReachedFill: "#f59e0b",
-    campReachedStroke: "#92400e",
-    campPendingFill: "#cbd5e1",
-    campPendingStroke: "#ffffff",
-    climberFill: "#fffbeb",
-    climberStroke: "#92400e",
-    climberText: "#78350f",
-  },
-};
-
 const trackConfigs: Record<
   StudyTrack,
   {
@@ -377,32 +332,25 @@ function MountainTrail({
 }) {
   const progressRatio = progress.totalSteps === 0 ? 0 : progress.knownCount / progress.totalSteps;
   const climberPoint = interpolateTrailPoint(progressRatio);
-  const artTheme = trackArtThemes[progress.track];
   const mountainImage = mountainImages[progress.track];
+  const summitMarker = progress.knownCount >= progress.totalSteps && progress.totalSteps > 0 ? "🏆" : "🎌";
 
   return (
     <div className="relative isolate h-56 w-56 shrink-0 overflow-hidden rounded-full border border-slate-200 bg-sky-50 shadow-sm">
       <img src={mountainImage} alt="" className="block h-full w-full object-cover" aria-hidden="true" />
       <div className="pointer-events-none absolute inset-0">
-        <div className="absolute left-1/2 top-[8%] -translate-x-1/2 rounded-full border border-amber-600 bg-amber-100 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-amber-900 shadow-sm">
-          Summit
+        <div className="absolute left-1/2 top-[5%] -translate-x-1/2 text-3xl leading-none drop-shadow-sm">
+          <span aria-label={summitMarker === "🏆" ? "Summit complete" : "Summit marker"}>{summitMarker}</span>
         </div>
         <div
-          className={`absolute -translate-x-1/2 -translate-y-1/2 ${reducedMotion ? "" : "transition-all duration-500 ease-out"}`}
+          className={`absolute -translate-y-1/2 ${reducedMotion ? "" : "transition-all duration-500 ease-out"}`}
           style={{
-            left: `${climberPoint.x}%`,
+            left: `calc(${climberPoint.x}% + 10px)`,
             top: `${climberPoint.y}%`,
           }}
         >
-          <div
-            className="rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide shadow-sm"
-            style={{
-              backgroundColor: active ? artTheme.climberFill : "#ffffff",
-              borderColor: artTheme.climberStroke,
-              color: artTheme.climberText,
-            }}
-          >
-            You
+          <div className="text-2xl leading-none drop-shadow-sm" aria-label={active ? "Current climber position" : "Climber position"}>
+            🔴
           </div>
         </div>
       </div>
@@ -882,6 +830,22 @@ function App() {
         [itemId]: {
           ...currentProgress,
           excludedFromLessons,
+        },
+      };
+    });
+  }
+
+  function markItemKnown(itemId: string) {
+    setProgressByItem((previous) => {
+      const currentProgress = previous[itemId] ?? createDefaultProgress(itemId);
+      return {
+        ...previous,
+        [itemId]: {
+          ...currentProgress,
+          status: "known",
+          correctCount: Math.max(currentProgress.correctCount, KNOWN_CORRECT_THRESHOLD),
+          lastAnsweredCorrect: true,
+          lastReviewedAt: new Date().toISOString(),
         },
       };
     });
@@ -1409,6 +1373,18 @@ function App() {
                           }`}
                         >
                           {selectedDictionaryProgress.excludedFromLessons ? "Include In Future Trails" : "Exclude From Future Trails"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => markItemKnown(selectedDictionaryItem.id)}
+                          disabled={selectedDictionaryProgress.status === "known"}
+                          className={`mt-3 w-full rounded-xl px-3 py-2 text-sm font-semibold transition ${
+                            selectedDictionaryProgress.status === "known"
+                              ? "cursor-not-allowed border border-slate-300 bg-slate-100 text-slate-400"
+                              : "border border-cyan-700 bg-cyan-50 text-cyan-900 hover:bg-cyan-100"
+                          }`}
+                        >
+                          {selectedDictionaryProgress.status === "known" ? "Already Known" : "Mark Known"}
                         </button>
                       </div>
                     )}
