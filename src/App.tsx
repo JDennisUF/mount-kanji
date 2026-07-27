@@ -44,7 +44,6 @@ type LessonCursorState = Record<StudyTrack, number>;
 const SESSION_TARGET_MINUTES = "5-10";
 const LESSON_CURSOR_STORAGE_KEY = "mount-kanji-lesson-cursor-v2";
 const SETTINGS_STORAGE_KEY = "mount-kanji-settings";
-const TRAIL_BATCH_SIZE = 5;
 const REVIEW_TRAIL_INSERTS = 2;
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -402,7 +401,7 @@ function App() {
   );
 
   const totalTrailItemCount = currentTrailItems.length;
-  const trailLessonCount = Math.max(1, Math.ceil(Math.max(1, totalTrailItemCount) / TRAIL_BATCH_SIZE));
+  const trailLessonCount = Math.max(1, currentLessons.length);
   const currentLessonCursor = lessonCursorByTrack[activeTrack] % Math.max(1, currentLessons.length);
   const currentLessonDefinition = currentLessons[currentLessonCursor];
   const currentLessonItem = activeLessonItems[lessonIndex];
@@ -531,10 +530,16 @@ function App() {
     });
   }, [sumoCategory, sumoQuery]);
 
-  function buildLessonSegment(startOffset: number): StudyItem[] {
+  function buildLessonSegment(lesson: SeedLesson | undefined): StudyItem[] {
     if (currentTrailItems.length === 0) {
       return [];
     }
+
+    const baseLessonItems =
+      lesson?.itemIds
+        .map((itemId) => itemById.get(itemId))
+        .filter((item): item is StudyItem => Boolean(item))
+        .filter((item) => !(progressByItem[item.id]?.excludedFromLessons ?? false)) ?? [];
 
     const priorityItems = currentTrailItems
       .filter((item) => (progressByItem[item.id]?.reviewWeight ?? 0) > 0)
@@ -546,14 +551,17 @@ function App() {
         }
         return bProgress.incorrectCount - aProgress.incorrectCount;
       })
-      .slice(0, REVIEW_TRAIL_INSERTS);
+      .slice(0, Math.min(REVIEW_TRAIL_INSERTS, baseLessonItems.length || REVIEW_TRAIL_INSERTS));
 
     const picked = [...priorityItems];
-    for (let index = 0; picked.length < Math.min(TRAIL_BATCH_SIZE, currentTrailItems.length) && index < currentTrailItems.length; index += 1) {
-      const item = currentTrailItems[(startOffset + index) % currentTrailItems.length];
+    for (const item of baseLessonItems) {
       if (!picked.some((candidate) => candidate.id === item.id)) {
         picked.push(item);
       }
+    }
+
+    if (picked.length === 0) {
+      return currentTrailItems.slice(0, Math.min(5, currentTrailItems.length));
     }
 
     return picked;
@@ -579,12 +587,12 @@ function App() {
       return;
     }
 
-    const lessonSegment = buildLessonSegment(currentLessonCursor * TRAIL_BATCH_SIZE);
+    const lessonSegment = buildLessonSegment(currentLessonDefinition);
     setActiveLessonItems(lessonSegment);
     setActiveLessonTitle(currentLessonDefinition?.title ?? `${currentTrackConfig.label} Lesson`);
     setLessonCursorByTrack((previous) => ({
       ...previous,
-      [activeTrack]: (previous[activeTrack] + 1) % Math.max(1, trailLessonCount),
+      [activeTrack]: (previous[activeTrack] + 1) % Math.max(1, currentLessons.length),
     }));
     setScreen("lesson");
     setLessonIndex(0);
