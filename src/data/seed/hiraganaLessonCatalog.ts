@@ -15,6 +15,11 @@ const lessonTitles = [
   "S Row Switchbacks",
   "T Row Traverse",
   "N Row Notch",
+  "H Row Hollow",
+  "M Row Meadow",
+  "Y Row Yard",
+  "R Row Run",
+  "W Row Wind",
 ];
 
 function buildItemIdsForLesson(startOffset: number): string[] {

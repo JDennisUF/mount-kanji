@@ -1106,7 +1106,7 @@ function App() {
                 </>
               ) : (
                 <p className="flex items-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 md:col-span-2">
-                  Vowels, K-row, S-row, T-row, and N-row
+                  Full basic hiragana chart. Dakuten and combinations come next.
                 </p>
               )}
             </div>
