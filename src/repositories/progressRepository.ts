@@ -1,8 +1,8 @@
-import type { QuizAttempt, UserKanjiProgress } from "../types";
+import type { QuizAttempt, UserStudyProgress } from "../types";
 
 export interface ProgressRepository {
-  loadAll(): Promise<Record<string, UserKanjiProgress>>;
-  saveAll(progress: Record<string, UserKanjiProgress>): Promise<void>;
+  loadAll(): Promise<Record<string, UserStudyProgress>>;
+  saveAll(progress: Record<string, UserStudyProgress>): Promise<void>;
   loadQuizAttempts(): Promise<QuizAttempt[]>;
   saveQuizAttempts(attempts: QuizAttempt[]): Promise<void>;
 }
@@ -19,21 +19,21 @@ function isQuizAttempt(value: unknown): value is QuizAttempt {
   return (
     typeof candidate.id === "string" &&
     typeof candidate.questionType === "string" &&
-    typeof candidate.kanjiId === "string" &&
+    (typeof candidate.itemId === "string" || typeof (candidate as { kanjiId?: string }).kanjiId === "string") &&
     typeof candidate.correct === "boolean" &&
     typeof candidate.answeredAt === "string"
   );
 }
 
 export class LocalStorageProgressRepository implements ProgressRepository {
-  async loadAll(): Promise<Record<string, UserKanjiProgress>> {
+  async loadAll(): Promise<Record<string, UserStudyProgress>> {
     const serialized = window.localStorage.getItem(STORAGE_KEY);
     if (!serialized) {
       return {};
     }
 
     try {
-      const parsed = JSON.parse(serialized) as Record<string, UserKanjiProgress>;
+      const parsed = JSON.parse(serialized) as Record<string, UserStudyProgress>;
       return parsed && typeof parsed === "object" ? parsed : {};
     } catch {
       window.localStorage.removeItem(STORAGE_KEY);
@@ -41,7 +41,7 @@ export class LocalStorageProgressRepository implements ProgressRepository {
     }
   }
 
-  async saveAll(progress: Record<string, UserKanjiProgress>): Promise<void> {
+  async saveAll(progress: Record<string, UserStudyProgress>): Promise<void> {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(progress));
   }
 
@@ -53,7 +53,14 @@ export class LocalStorageProgressRepository implements ProgressRepository {
 
     try {
       const parsed = JSON.parse(serialized) as unknown;
-      return Array.isArray(parsed) ? parsed.filter(isQuizAttempt) : [];
+      return Array.isArray(parsed)
+        ? parsed
+            .filter(isQuizAttempt)
+            .map((attempt) => ({
+              ...attempt,
+              itemId: attempt.itemId ?? (attempt as { kanjiId?: string }).kanjiId ?? "",
+            }))
+        : [];
     } catch {
       window.localStorage.removeItem(QUIZ_ATTEMPTS_STORAGE_KEY);
       return [];

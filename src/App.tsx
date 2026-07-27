@@ -2,12 +2,14 @@ import { useEffect, useMemo, useState } from "react";
 import { toRomaji } from "wanakana";
 
 import { beginnerKanjiPool } from "./data/seed/beginnerSet";
-import { seedLessons } from "./data/seed/lessonCatalog";
+import { hiraganaLessons } from "./data/seed/hiraganaLessonCatalog";
+import { hiraganaPool } from "./data/seed/hiraganaSet";
+import { seedLessons, type SeedLesson } from "./data/seed/lessonCatalog";
 import { sumoTerms, type SumoTerm } from "./data/seed/sumoTerms";
 import { createProgressRepository } from "./repositories/progressRepositoryFactory";
-import { ReviewTracker, resolveKanjiStatus } from "./services/reviewTracker";
 import type { ProgressRepository } from "./repositories/progressRepository";
-import type { Kanji, QuizAttempt, UserKanjiProgress } from "./types";
+import { ReviewTracker, resolveKanjiStatus } from "./services/reviewTracker";
+import type { QuizAttempt, StudyItem, StudyTrack, UserStudyProgress } from "./types";
 
 type Screen =
   | "dashboard"
@@ -21,19 +23,14 @@ type Screen =
   | "sumo";
 
 interface QuizQuestion {
-  kanjiId: string;
-  promptMeaning: string;
+  itemId: string;
+  promptLabel: string;
   options: string[];
   correctOption: string;
 }
 
-const SESSION_TARGET_MINUTES = "5-10";
-const LESSON_CURSOR_STORAGE_KEY = "mount-kanji-lesson-cursor";
-const SETTINGS_STORAGE_KEY = "mount-kanji-settings";
-const TRAIL_BATCH_SIZE = 5;
-const REVIEW_TRAIL_INSERTS = 2;
-
 type TextScale = 90 | 100 | 110 | 125;
+type SumoCategoryFilter = "all" | SumoTerm["category"];
 
 interface AppSettings {
   showFurigana: boolean;
@@ -42,7 +39,13 @@ interface AppSettings {
   textScale: TextScale;
 }
 
-type SumoCategoryFilter = "all" | SumoTerm["category"];
+type LessonCursorState = Record<StudyTrack, number>;
+
+const SESSION_TARGET_MINUTES = "5-10";
+const LESSON_CURSOR_STORAGE_KEY = "mount-kanji-lesson-cursor-v2";
+const SETTINGS_STORAGE_KEY = "mount-kanji-settings";
+const TRAIL_BATCH_SIZE = 5;
+const REVIEW_TRAIL_INSERTS = 2;
 
 const DEFAULT_SETTINGS: AppSettings = {
   showFurigana: true,
@@ -51,9 +54,65 @@ const DEFAULT_SETTINGS: AppSettings = {
   textScale: 100,
 };
 
+const DEFAULT_LESSON_CURSORS: LessonCursorState = {
+  kanji: 0,
+  hiragana: 0,
+};
+
 const reviewTracker = new ReviewTracker();
 
-const kanjiById = new Map(beginnerKanjiPool.map((kanji) => [kanji.id, kanji]));
+const trackConfigs: Record<
+  StudyTrack,
+  {
+    label: string;
+    dashboardTitle: string;
+    dashboardSubtitle: string;
+    trailName: string;
+    introFocus: string;
+    unitSingular: string;
+    unitPlural: string;
+    itemLabel: string;
+    promptLabel: string;
+    dictionaryTitle: string;
+    focusFieldLabel: string;
+    lessons: SeedLesson[];
+    pool: StudyItem[];
+  }
+> = {
+  kanji: {
+    label: "Mount Kanji",
+    dashboardTitle: "Base Camp Dashboard",
+    dashboardSubtitle: "Meaning-first recognition and review",
+    trailName: "Kanji Trail",
+    introFocus: "Core recognition",
+    unitSingular: "kanji",
+    unitPlural: "kanji",
+    itemLabel: "meaning",
+    promptLabel: "Which kanji means",
+    dictionaryTitle: "JLPT Kanji Browser",
+    focusFieldLabel: "Meaning",
+    lessons: seedLessons,
+    pool: beginnerKanjiPool,
+  },
+  hiragana: {
+    label: "Mount Hiragana",
+    dashboardTitle: "Hiragana Base Camp",
+    dashboardSubtitle: "Sound-first recognition and review",
+    trailName: "Hiragana Trail",
+    introFocus: "Kana sound mapping",
+    unitSingular: "character",
+    unitPlural: "characters",
+    itemLabel: "sound",
+    promptLabel: "Which hiragana sounds like",
+    dictionaryTitle: "Hiragana Reference Chart",
+    focusFieldLabel: "Sound",
+    lessons: hiraganaLessons,
+    pool: hiraganaPool,
+  },
+};
+
+const allItems = [...beginnerKanjiPool, ...hiraganaPool];
+const itemById = new Map(allItems.map((item) => [item.id, item]));
 
 function shuffle<T>(items: T[]): T[] {
   const copy = [...items];
@@ -64,29 +123,10 @@ function shuffle<T>(items: T[]): T[] {
   return copy;
 }
 
-function resolveLessonKanji(kanjiIds: string[]): Kanji[] {
-  return kanjiIds.map((id) => kanjiById.get(id)).filter(Boolean) as Kanji[];
-}
-
-function buildQuizQuestions(lessonKanji: Kanji[]): QuizQuestion[] {
-  return lessonKanji.map((kanji) => {
-    const distractors = shuffle(beginnerKanjiPool.filter((item) => item.id !== kanji.id))
-      .slice(0, 3)
-      .map((item) => item.character);
-    const options = shuffle([kanji.character, ...distractors]);
-    return {
-      kanjiId: kanji.id,
-      promptMeaning: kanji.primaryMeaning,
-      options,
-      correctOption: kanji.character,
-    };
-  });
-}
-
-function createDefaultProgress(kanjiId: string): UserKanjiProgress {
+function createDefaultProgress(itemId: string): UserStudyProgress {
   return {
-    id: `progress_${kanjiId}`,
-    kanjiId,
+    id: `progress_${itemId}`,
+    itemId,
     status: "new",
     correctCount: 0,
     incorrectCount: 0,
@@ -100,13 +140,14 @@ function createDefaultProgress(kanjiId: string): UserKanjiProgress {
 }
 
 function normalizeProgressRow(
-  kanjiId: string,
-  raw?: Partial<UserKanjiProgress> & {
+  itemId: string,
+  raw?: Partial<UserStudyProgress> & {
     status?: string;
     consecutiveCorrect?: number;
+    kanjiId?: string;
   },
-): UserKanjiProgress {
-  const base = createDefaultProgress(kanjiId);
+): UserStudyProgress {
+  const base = createDefaultProgress(itemId);
   const correctCount = typeof raw?.correctCount === "number" ? raw.correctCount : 0;
   const incorrectCount = typeof raw?.incorrectCount === "number" ? raw.incorrectCount : 0;
   const currentStreak =
@@ -126,7 +167,7 @@ function normalizeProgressRow(
   return {
     ...base,
     ...raw,
-    kanjiId,
+    itemId,
     id: typeof raw?.id === "string" ? raw.id : base.id,
     status: resolveKanjiStatus(correctCount, incorrectCount, currentStreak),
     correctCount,
@@ -140,13 +181,13 @@ function normalizeProgressRow(
   };
 }
 
-function uniqueByKanjiId(rows: UserKanjiProgress[]): UserKanjiProgress[] {
+function uniqueByItemId(rows: UserStudyProgress[]): UserStudyProgress[] {
   const seen = new Set<string>();
   return rows.filter((row) => {
-    if (seen.has(row.kanjiId)) {
+    if (seen.has(row.itemId)) {
       return false;
     }
-    seen.add(row.kanjiId);
+    seen.add(row.itemId);
     return true;
   });
 }
@@ -165,14 +206,13 @@ function computeStreaks(attempts: QuizAttempt[]): { currentStreak: number; longe
   }
 
   const uniqueDays = Array.from(new Set(attempts.map((attempt) => toUtcDateKey(attempt.answeredAt)))).sort();
-
   let longest = 1;
   let running = 1;
-  for (let i = 1; i < uniqueDays.length; i += 1) {
-    const prev = new Date(`${uniqueDays[i - 1]}T00:00:00Z`).getTime();
-    const cur = new Date(`${uniqueDays[i]}T00:00:00Z`).getTime();
-    const diffDays = (cur - prev) / (24 * 60 * 60 * 1000);
-    if (diffDays === 1) {
+
+  for (let index = 1; index < uniqueDays.length; index += 1) {
+    const previous = new Date(`${uniqueDays[index - 1]}T00:00:00Z`).getTime();
+    const current = new Date(`${uniqueDays[index]}T00:00:00Z`).getTime();
+    if ((current - previous) / (24 * 60 * 60 * 1000) === 1) {
       running += 1;
       longest = Math.max(longest, running);
     } else {
@@ -211,7 +251,7 @@ function formatReadings(readings: string[], showRomaji: boolean): string {
     .join(", ");
 }
 
-function accuracyPercent(row: UserKanjiProgress): number {
+function accuracyPercent(row: UserStudyProgress): number {
   const total = row.correctCount + row.incorrectCount;
   if (total === 0) {
     return 0;
@@ -219,17 +259,33 @@ function accuracyPercent(row: UserKanjiProgress): number {
   return Math.round((row.correctCount / total) * 100);
 }
 
+function buildQuizQuestions(items: StudyItem[], pool: StudyItem[]): QuizQuestion[] {
+  return items.map((item) => {
+    const distractors = shuffle(pool.filter((candidate) => candidate.id !== item.id))
+      .slice(0, 3)
+      .map((candidate) => candidate.character);
+
+    return {
+      itemId: item.id,
+      promptLabel: item.primaryMeaning,
+      options: shuffle([item.character, ...distractors]),
+      correctOption: item.character,
+    };
+  });
+}
+
 function App() {
   const [screen, setScreen] = useState<Screen>("dashboard");
+  const [activeTrack, setActiveTrack] = useState<StudyTrack>("kanji");
   const [lessonIndex, setLessonIndex] = useState(0);
   const [quizIndex, setQuizIndex] = useState(0);
   const [quizScore, setQuizScore] = useState(0);
   const [reviewDoneCount, setReviewDoneCount] = useState(0);
   const [lastAnswerCorrect, setLastAnswerCorrect] = useState<boolean | null>(null);
-  const [reviewFeedback, setReviewFeedback] = useState<string>("");
-  const [progressByKanji, setProgressByKanji] = useState<Record<string, UserKanjiProgress>>({});
+  const [reviewFeedback, setReviewFeedback] = useState("");
+  const [progressByItem, setProgressByItem] = useState<Record<string, UserStudyProgress>>({});
   const [quizAttempts, setQuizAttempts] = useState<QuizAttempt[]>([]);
-  const [sessionMissedKanjiIds, setSessionMissedKanjiIds] = useState<string[]>([]);
+  const [sessionMissedItemIds, setSessionMissedItemIds] = useState<string[]>([]);
   const [settings, setSettings] = useState<AppSettings>(() => {
     const serialized = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
     if (!serialized) {
@@ -247,29 +303,36 @@ function App() {
   const [dictionarySumoOnly, setDictionarySumoOnly] = useState(false);
   const [sumoQuery, setSumoQuery] = useState("");
   const [sumoCategory, setSumoCategory] = useState<SumoCategoryFilter>("all");
-  const [selectedKanjiId, setSelectedKanjiId] = useState<string>(beginnerKanjiPool[0]?.id ?? "");
-  const [activeLessonKanji, setActiveLessonKanji] = useState<Kanji[]>(() => {
-    const firstLesson = seedLessons[0];
-    return firstLesson ? resolveLessonKanji(firstLesson.kanjiIds) : [];
+  const [selectedItemId, setSelectedItemId] = useState<string>(trackConfigs.kanji.pool[0]?.id ?? "");
+  const [activeLessonItems, setActiveLessonItems] = useState<StudyItem[]>(() => {
+    const firstLesson = trackConfigs.kanji.lessons[0];
+    return firstLesson ? firstLesson.itemIds.map((id) => itemById.get(id)).filter(Boolean) as StudyItem[] : [];
   });
-  const [activeLessonTitle, setActiveLessonTitle] = useState<string>(seedLessons[0]?.title ?? "Beginner Lesson");
+  const [activeLessonTitle, setActiveLessonTitle] = useState<string>(trackConfigs.kanji.lessons[0]?.title ?? "Trail Lesson");
   const [quizQuestions, setQuizQuestions] = useState<QuizQuestion[]>([]);
-  const [reviewQueue, setReviewQueue] = useState<UserKanjiProgress[]>([]);
+  const [reviewQueue, setReviewQueue] = useState<UserStudyProgress[]>([]);
   const [progressRepository, setProgressRepository] = useState<ProgressRepository | null>(null);
   const [isProgressHydrated, setIsProgressHydrated] = useState(false);
-  const [lessonCursor, setLessonCursor] = useState<number>(() => {
-    const saved = window.localStorage.getItem(LESSON_CURSOR_STORAGE_KEY);
-    if (!saved) {
-      return 0;
+  const [lessonCursorByTrack, setLessonCursorByTrack] = useState<LessonCursorState>(() => {
+    const serialized = window.localStorage.getItem(LESSON_CURSOR_STORAGE_KEY);
+    if (!serialized) {
+      return DEFAULT_LESSON_CURSORS;
     }
 
-    const parsed = Number(saved);
-    if (!Number.isFinite(parsed) || parsed < 0) {
-      return 0;
+    try {
+      const parsed = JSON.parse(serialized) as Partial<LessonCursorState>;
+      return {
+        kanji: Number.isFinite(parsed.kanji) && (parsed.kanji ?? 0) >= 0 ? Math.floor(parsed.kanji ?? 0) : 0,
+        hiragana: Number.isFinite(parsed.hiragana) && (parsed.hiragana ?? 0) >= 0 ? Math.floor(parsed.hiragana ?? 0) : 0,
+      };
+    } catch {
+      return DEFAULT_LESSON_CURSORS;
     }
-
-    return Math.floor(parsed) % Math.max(1, seedLessons.length);
   });
+
+  const currentTrackConfig = trackConfigs[activeTrack];
+  const currentPool = currentTrackConfig.pool;
+  const currentLessons = currentTrackConfig.lessons;
 
   useEffect(() => {
     let isActive = true;
@@ -284,14 +347,17 @@ function App() {
         repository.loadAll(),
         repository.loadQuizAttempts(),
       ]);
-      if (isActive) {
-        const normalizedProgress = Object.fromEntries(
-          Object.entries(loadedProgress).map(([kanjiId, row]) => [kanjiId, normalizeProgressRow(kanjiId, row)]),
-        );
-        setProgressByKanji(normalizedProgress);
-        setQuizAttempts(loadedAttempts);
-        setIsProgressHydrated(true);
+
+      if (!isActive) {
+        return;
       }
+
+      const normalizedProgress = Object.fromEntries(
+        Object.entries(loadedProgress).map(([itemId, row]) => [itemId, normalizeProgressRow(itemId, row)]),
+      );
+      setProgressByItem(normalizedProgress);
+      setQuizAttempts(loadedAttempts);
+      setIsProgressHydrated(true);
     });
 
     return () => {
@@ -304,8 +370,8 @@ function App() {
       return;
     }
 
-    progressRepository.saveAll(progressByKanji);
-  }, [isProgressHydrated, progressByKanji, progressRepository]);
+    progressRepository.saveAll(progressByItem);
+  }, [isProgressHydrated, progressByItem, progressRepository]);
 
   useEffect(() => {
     if (!progressRepository || !isProgressHydrated) {
@@ -316,28 +382,47 @@ function App() {
   }, [isProgressHydrated, progressRepository, quizAttempts]);
 
   useEffect(() => {
-    window.localStorage.setItem(LESSON_CURSOR_STORAGE_KEY, String(lessonCursor));
-  }, [lessonCursor]);
+    window.localStorage.setItem(LESSON_CURSOR_STORAGE_KEY, JSON.stringify(lessonCursorByTrack));
+  }, [lessonCursorByTrack]);
 
   useEffect(() => {
     window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
   }, [settings]);
 
+  useEffect(() => {
+    setDictionaryQuery("");
+    setDictionaryRadical("all");
+    setDictionarySumoOnly(false);
+    setSelectedItemId(currentPool[0]?.id ?? "");
+  }, [activeTrack, currentPool]);
+
+  const currentTrailItems = useMemo(
+    () => currentPool.filter((item) => !(progressByItem[item.id]?.excludedFromLessons ?? false)),
+    [currentPool, progressByItem],
+  );
+
+  const totalTrailItemCount = currentTrailItems.length;
+  const trailLessonCount = Math.max(1, Math.ceil(Math.max(1, totalTrailItemCount) / TRAIL_BATCH_SIZE));
+  const currentLessonCursor = lessonCursorByTrack[activeTrack] % Math.max(1, currentLessons.length);
+  const currentLessonDefinition = currentLessons[currentLessonCursor];
+  const currentLessonItem = activeLessonItems[lessonIndex];
+  const currentQuestion = quizQuestions[quizIndex];
+
   const overallStats = useMemo(() => {
-    const rows = Object.values(progressByKanji);
-    const activeKanjiIds = new Set(
-      beginnerKanjiPool
-        .filter((kanji) => !(progressByKanji[kanji.id]?.excludedFromLessons ?? false))
-        .map((kanji) => kanji.id),
-    );
-    const activeRows = rows.filter((row) => activeKanjiIds.has(row.kanjiId));
+    const activeIds = new Set(currentTrailItems.map((item) => item.id));
+    const activeRows = Object.values(progressByItem).filter((row) => activeIds.has(row.itemId));
     const learned = activeRows.filter((row) => row.correctCount + row.incorrectCount > 0).length;
     const mastered = activeRows.filter((row) => row.status === "mastered").length;
-    const due = reviewTracker.getQueue(rows).length;
-    const totalCorrect = rows.reduce((sum, row) => sum + row.correctCount, 0);
-    const totalAttempts = rows.reduce((sum, row) => sum + row.correctCount + row.incorrectCount, 0);
+    const due = reviewTracker.getQueue(activeRows).length;
+    const totalCorrect = activeRows.reduce((sum, row) => sum + row.correctCount, 0);
+    const totalAttempts = activeRows.reduce((sum, row) => sum + row.correctCount + row.incorrectCount, 0);
     const accuracy = totalAttempts > 0 ? Math.round((totalCorrect / totalAttempts) * 100) : 0;
-    const streaks = computeStreaks(quizAttempts);
+    const streaks = computeStreaks(
+      quizAttempts.filter((attempt) => {
+        const item = itemById.get(attempt.itemId);
+        return item?.script === activeTrack;
+      }),
+    );
 
     return {
       learned,
@@ -347,74 +432,83 @@ function App() {
       currentStreak: streaks.currentStreak,
       longestStreak: streaks.longestStreak,
     };
-  }, [progressByKanji, quizAttempts]);
+  }, [activeTrack, currentTrailItems, progressByItem, quizAttempts]);
 
-  const currentLessonKanji = activeLessonKanji[lessonIndex];
-  const currentQuestion = quizQuestions[quizIndex];
-  const recentAttempts = quizAttempts.slice(0, 5);
-  const activeTrailKanji = useMemo(() => {
-    return beginnerKanjiPool.filter((kanji) => !(progressByKanji[kanji.id]?.excludedFromLessons ?? false));
-  }, [progressByKanji]);
-  const totalTrailKanjiCount = activeTrailKanji.length;
-  const trailLessonCount = Math.max(1, Math.ceil(Math.max(1, totalTrailKanjiCount) / TRAIL_BATCH_SIZE));
-  const weakKanji = useMemo(() => {
-    return Object.values(progressByKanji)
-      .filter((row) => row.incorrectCount > 0)
+  const weakItems = useMemo(() => {
+    const currentIds = new Set(currentPool.map((item) => item.id));
+    return Object.values(progressByItem)
+      .filter((row) => currentIds.has(row.itemId) && row.incorrectCount > 0)
       .sort((a, b) => b.incorrectCount - a.incorrectCount)
       .slice(0, 8)
-      .map((row) => ({ row, kanji: kanjiById.get(row.kanjiId) }))
-      .filter((item) => item.kanji);
-  }, [progressByKanji]);
-  const strongKanji = useMemo(() => {
-    return Object.values(progressByKanji)
-      .filter((row) => row.correctCount > 0)
+      .map((row) => ({ row, item: itemById.get(row.itemId) }))
+      .filter((entry) => entry.item);
+  }, [currentPool, progressByItem]);
+
+  const strongItems = useMemo(() => {
+    const currentIds = new Set(currentPool.map((item) => item.id));
+    return Object.values(progressByItem)
+      .filter((row) => currentIds.has(row.itemId) && row.correctCount > 0)
       .sort((a, b) => b.correctCount - a.correctCount)
       .slice(0, 8)
-      .map((row) => ({ row, kanji: kanjiById.get(row.kanjiId) }))
-      .filter((item) => item.kanji);
-  }, [progressByKanji]);
+      .map((row) => ({ row, item: itemById.get(row.itemId) }))
+      .filter((entry) => entry.item);
+  }, [currentPool, progressByItem]);
 
   const currentReviewProgress = reviewQueue[0];
-  const currentReviewKanji = currentReviewProgress ? kanjiById.get(currentReviewProgress.kanjiId) : null;
+  const currentReviewItem = currentReviewProgress ? itemById.get(currentReviewProgress.itemId) : null;
+  const recentAttempts = quizAttempts
+    .filter((attempt) => {
+      const item = itemById.get(attempt.itemId);
+      return item?.script === activeTrack;
+    })
+    .slice(0, 5);
 
   const availableRadicals = useMemo(() => {
-    const unique = new Set(beginnerKanjiPool.map((kanji) => kanji.radical));
-    return Array.from(unique).sort((a, b) => a.localeCompare(b));
-  }, []);
+    if (activeTrack !== "kanji") {
+      return [];
+    }
+    const radicals = beginnerKanjiPool
+      .map((item) => item.radical)
+      .filter((radical): radical is string => Boolean(radical));
+    return Array.from(new Set(radicals)).sort((a, b) => a.localeCompare(b));
+  }, [activeTrack]);
 
-  const filteredDictionaryKanji = useMemo(() => {
+  const filteredDictionaryItems = useMemo(() => {
     const query = dictionaryQuery.trim().toLowerCase();
 
-    return beginnerKanjiPool.filter((kanji) => {
-      if (dictionarySumoOnly && !kanji.sumoRelevant) {
-        return false;
-      }
-
-      if (dictionaryRadical !== "all" && kanji.radical !== dictionaryRadical) {
-        return false;
+    return currentPool.filter((item) => {
+      if (activeTrack === "kanji") {
+        if (dictionarySumoOnly && !item.sumoRelevant) {
+          return false;
+        }
+        if (dictionaryRadical !== "all" && item.radical !== dictionaryRadical) {
+          return false;
+        }
       }
 
       if (!query) {
         return true;
       }
 
-      const meaningMatch =
-        kanji.primaryMeaning.toLowerCase().includes(query) ||
-        kanji.meanings.some((meaning) => meaning.toLowerCase().includes(query));
-      const readingMatch = [...kanji.onyomi, ...kanji.kunyomi].some((reading) => reading.toLowerCase().includes(query));
-      const tagMatch = kanji.tags.some((tag) => tag.toLowerCase().includes(query));
-      const charMatch = kanji.character.includes(dictionaryQuery.trim());
-
-      return meaningMatch || readingMatch || tagMatch || charMatch;
+      const readingPool = [...item.onyomi, ...item.kunyomi, item.romaji ?? ""];
+      return (
+        item.character.includes(dictionaryQuery.trim()) ||
+        item.primaryMeaning.toLowerCase().includes(query) ||
+        item.meanings.some((meaning) => meaning.toLowerCase().includes(query)) ||
+        readingPool.some((reading) => reading.toLowerCase().includes(query)) ||
+        item.tags.some((tag) => tag.toLowerCase().includes(query)) ||
+        (item.row?.toLowerCase().includes(query) ?? false)
+      );
     });
-  }, [dictionaryQuery, dictionaryRadical, dictionarySumoOnly]);
+  }, [activeTrack, currentPool, dictionaryQuery, dictionaryRadical, dictionarySumoOnly]);
 
-  const selectedDictionaryKanji = useMemo(() => {
-    const selected = filteredDictionaryKanji.find((kanji) => kanji.id === selectedKanjiId);
-    return selected ?? filteredDictionaryKanji[0] ?? null;
-  }, [filteredDictionaryKanji, selectedKanjiId]);
-  const selectedDictionaryProgress = selectedDictionaryKanji
-    ? progressByKanji[selectedDictionaryKanji.id] ?? createDefaultProgress(selectedDictionaryKanji.id)
+  const selectedDictionaryItem = useMemo(() => {
+    const selected = filteredDictionaryItems.find((item) => item.id === selectedItemId);
+    return selected ?? filteredDictionaryItems[0] ?? null;
+  }, [filteredDictionaryItems, selectedItemId]);
+
+  const selectedDictionaryProgress = selectedDictionaryItem
+    ? progressByItem[selectedDictionaryItem.id] ?? createDefaultProgress(selectedDictionaryItem.id)
     : null;
 
   const filteredSumoTerms = useMemo(() => {
@@ -437,102 +531,83 @@ function App() {
     });
   }, [sumoCategory, sumoQuery]);
 
-  function buildLessonSegment(startOffset: number): Kanji[] {
-    if (activeTrailKanji.length === 0) {
+  function buildLessonSegment(startOffset: number): StudyItem[] {
+    if (currentTrailItems.length === 0) {
       return [];
     }
 
-    const priorityKanji = activeTrailKanji
-      .filter((kanji) => (progressByKanji[kanji.id]?.reviewWeight ?? 0) > 0)
+    const priorityItems = currentTrailItems
+      .filter((item) => (progressByItem[item.id]?.reviewWeight ?? 0) > 0)
       .sort((a, b) => {
-        const aProgress = progressByKanji[a.id] ?? createDefaultProgress(a.id);
-        const bProgress = progressByKanji[b.id] ?? createDefaultProgress(b.id);
-
+        const aProgress = progressByItem[a.id] ?? createDefaultProgress(a.id);
+        const bProgress = progressByItem[b.id] ?? createDefaultProgress(b.id);
         if (bProgress.reviewWeight !== aProgress.reviewWeight) {
           return bProgress.reviewWeight - aProgress.reviewWeight;
         }
-
         return bProgress.incorrectCount - aProgress.incorrectCount;
       })
       .slice(0, REVIEW_TRAIL_INSERTS);
 
-    const picked = [...priorityKanji];
-    for (let i = 0; picked.length < Math.min(TRAIL_BATCH_SIZE, activeTrailKanji.length) && i < activeTrailKanji.length; i += 1) {
-      const index = (startOffset + i) % activeTrailKanji.length;
-      const kanji = activeTrailKanji[index];
-      if (!picked.some((item) => item.id === kanji.id)) {
-        picked.push(kanji);
+    const picked = [...priorityItems];
+    for (let index = 0; picked.length < Math.min(TRAIL_BATCH_SIZE, currentTrailItems.length) && index < currentTrailItems.length; index += 1) {
+      const item = currentTrailItems[(startOffset + index) % currentTrailItems.length];
+      if (!picked.some((candidate) => candidate.id === item.id)) {
+        picked.push(item);
       }
     }
 
     return picked;
   }
 
+  function switchTrack(track: StudyTrack) {
+    setActiveTrack(track);
+    setScreen("dashboard");
+    setLessonIndex(0);
+    setQuizIndex(0);
+    setQuizScore(0);
+    setReviewDoneCount(0);
+    setReviewFeedback("");
+    setLastAnswerCorrect(null);
+    setSessionMissedItemIds([]);
+    setReviewQueue([]);
+  }
+
   function startLesson() {
-    if (activeTrailKanji.length === 0) {
-      setReviewFeedback("All kanji are currently excluded from future trails.");
+    if (currentTrailItems.length === 0) {
+      setReviewFeedback(`All ${currentTrackConfig.unitPlural} are currently excluded from future trails.`);
       setScreen("dashboard");
       return;
     }
 
-    const lessonCount = Math.max(1, Math.ceil(Math.max(1, activeTrailKanji.length) / TRAIL_BATCH_SIZE));
-    const lessonDefinition = seedLessons[lessonCursor];
-    const lessonSegment = buildLessonSegment(lessonCursor * TRAIL_BATCH_SIZE);
-    const nextCursor = (lessonCursor + 1) % lessonCount;
-
-    setActiveLessonKanji(lessonSegment);
-    setActiveLessonTitle(lessonDefinition?.title ?? `Trail Lesson ${lessonCursor + 1}`);
-    setLessonCursor(nextCursor);
+    const lessonSegment = buildLessonSegment(currentLessonCursor * TRAIL_BATCH_SIZE);
+    setActiveLessonItems(lessonSegment);
+    setActiveLessonTitle(currentLessonDefinition?.title ?? `${currentTrackConfig.label} Lesson`);
+    setLessonCursorByTrack((previous) => ({
+      ...previous,
+      [activeTrack]: (previous[activeTrack] + 1) % Math.max(1, trailLessonCount),
+    }));
     setScreen("lesson");
     setLessonIndex(0);
     setQuizIndex(0);
     setQuizScore(0);
     setReviewDoneCount(0);
-    setSessionMissedKanjiIds([]);
+    setSessionMissedItemIds([]);
     setReviewFeedback("");
     setLastAnswerCorrect(null);
-    setQuizQuestions(buildQuizQuestions(lessonSegment));
+    setQuizQuestions(buildQuizQuestions(lessonSegment, currentTrailItems));
   }
 
-  function startReviewQueue(seedKanjiIds: string[] = []) {
-    const seeded = seedKanjiIds
-      .map((kanjiId) => progressByKanji[kanjiId] ?? createDefaultProgress(kanjiId))
-      .filter((row) => !row.excludedFromLessons);
-    const queue = uniqueByKanjiId([...seeded, ...reviewTracker.getQueue(Object.values(progressByKanji))]);
+  function startReviewQueue(seedItemIds: string[] = []) {
+    const currentIds = new Set(currentPool.map((item) => item.id));
+    const seeded = seedItemIds
+      .map((itemId) => progressByItem[itemId] ?? createDefaultProgress(itemId))
+      .filter((row) => currentIds.has(row.itemId) && !row.excludedFromLessons);
+    const liveQueue = reviewTracker.getQueue(Object.values(progressByItem)).filter((row) => currentIds.has(row.itemId));
 
-    setReviewQueue(queue);
+    setReviewQueue(uniqueByItemId([...seeded, ...liveQueue]));
     setReviewDoneCount(0);
     setReviewFeedback("");
     setScreen("review");
-  }
-
-  function openDictionary() {
-    setScreen("dictionary");
-  }
-
-  function openProgress() {
-    setScreen("progress");
-  }
-
-  function openSumo() {
-    setScreen("sumo");
-  }
-
-  function openReviewQueue() {
-    startReviewQueue();
-  }
-
-  function openSettings() {
-    setScreen("settings");
-  }
-
-  function advanceLesson() {
-    if (lessonIndex + 1 >= activeLessonKanji.length) {
-      setScreen("quiz");
-      return;
-    }
-
-    setLessonIndex((value) => value + 1);
   }
 
   function submitAnswer(option: string) {
@@ -544,33 +619,26 @@ function App() {
     setLastAnswerCorrect(isCorrect);
 
     const attempt: QuizAttempt = {
-      id: `attempt_${Date.now()}_${currentQuestion.kanjiId}_${quizIndex}`,
-      questionType: "kanji_recall",
-      kanjiId: currentQuestion.kanjiId,
+      id: `attempt_${Date.now()}_${currentQuestion.itemId}_${quizIndex}`,
+      questionType: activeTrack === "kanji" ? "kanji_recall" : "reading_quiz",
+      itemId: currentQuestion.itemId,
       correct: isCorrect,
       answeredAt: new Date().toISOString(),
     };
 
     setQuizAttempts((existing) => [attempt, ...existing].slice(0, 1000));
-
-    setProgressByKanji((previous) => {
-      const currentProgress = previous[currentQuestion.kanjiId] ?? createDefaultProgress(currentQuestion.kanjiId);
-      const updated = reviewTracker.applyResult(currentProgress, isCorrect);
+    setProgressByItem((previous) => {
+      const currentProgress = previous[currentQuestion.itemId] ?? createDefaultProgress(currentQuestion.itemId);
       return {
         ...previous,
-        [currentQuestion.kanjiId]: updated,
+        [currentQuestion.itemId]: reviewTracker.applyResult(currentProgress, isCorrect),
       };
     });
 
     if (isCorrect) {
       setQuizScore((value) => value + 1);
     } else {
-      setSessionMissedKanjiIds((existing) => {
-        if (existing.includes(currentQuestion.kanjiId)) {
-          return existing;
-        }
-        return [...existing, currentQuestion.kanjiId];
-      });
+      setSessionMissedItemIds((existing) => (existing.includes(currentQuestion.itemId) ? existing : [...existing, currentQuestion.itemId]));
     }
 
     if (quizIndex + 1 >= quizQuestions.length) {
@@ -579,6 +647,40 @@ function App() {
     }
 
     setQuizIndex((value) => value + 1);
+  }
+
+  function applyReviewResult(correct: boolean) {
+    if (!currentReviewProgress) {
+      return;
+    }
+
+    const activeProgress = progressByItem[currentReviewProgress.itemId] ?? currentReviewProgress;
+    const updatedProgress = reviewTracker.applyResult(activeProgress, correct);
+
+    setProgressByItem((previous) => ({
+      ...previous,
+      [updatedProgress.itemId]: updatedProgress,
+    }));
+    setReviewDoneCount((count) => count + 1);
+    setReviewFeedback(
+      `${correct ? "Logged a hit" : "Logged a miss"} for ${currentReviewItem?.character ?? "item"}. Review weight is now ${updatedProgress.reviewWeight}.`,
+    );
+    setReviewQueue((queue) => queue.slice(1));
+  }
+
+  function setItemExcluded(itemId: string, excludedFromLessons: boolean) {
+    setProgressByItem((previous) => {
+      const currentProgress = previous[itemId] ?? createDefaultProgress(itemId);
+      return {
+        ...previous,
+        [itemId]: {
+          ...currentProgress,
+          excludedFromLessons,
+          reviewWeight: excludedFromLessons ? 0 : currentProgress.reviewWeight,
+        },
+      };
+    });
+    setReviewQueue((queue) => queue.filter((row) => row.itemId !== itemId || !excludedFromLessons));
   }
 
   function returnToDashboard() {
@@ -591,52 +693,26 @@ function App() {
     setLastAnswerCorrect(null);
   }
 
-  function applyReviewResult(correct: boolean) {
-    if (!currentReviewProgress) {
-      return;
-    }
-
-    const activeProgress = progressByKanji[currentReviewProgress.kanjiId] ?? currentReviewProgress;
-    const updatedProgress = reviewTracker.applyResult(activeProgress, correct);
-
-    setProgressByKanji((previous) => {
-      return {
-        ...previous,
-        [updatedProgress.kanjiId]: updatedProgress,
-      };
-    });
-
-    setReviewDoneCount((count) => count + 1);
-    setReviewFeedback(
-      `${correct ? "Logged a hit" : "Logged a miss"} for ${currentReviewKanji?.character ?? "kanji"}. Review weight is now ${updatedProgress.reviewWeight}.`,
-    );
-    setReviewQueue((queue) => queue.slice(1));
-  }
-
-  function setKanjiExcluded(kanjiId: string, excludedFromLessons: boolean) {
-    setProgressByKanji((previous) => {
-      const currentProgress = previous[kanjiId] ?? createDefaultProgress(kanjiId);
-      return {
-        ...previous,
-        [kanjiId]: {
-          ...currentProgress,
-          excludedFromLessons,
-          reviewWeight: excludedFromLessons ? 0 : currentProgress.reviewWeight,
-        },
-      };
-    });
-
-    setReviewQueue((queue) => queue.filter((row) => row.kanjiId !== kanjiId || !excludedFromLessons));
-  }
-
   const trails = [
-    { name: "Beginner Trail", progress: `${overallStats.learned} / ${totalTrailKanjiCount} kanji`, focus: "Core recognition" },
-    { name: "Radicals Trail", progress: "Locked for phase 2", focus: "Pattern clues" },
-    { name: "Sumo Trail", progress: "Content loading next", focus: "Ranks and match terms" },
+    {
+      name: currentTrackConfig.trailName,
+      progress: `${overallStats.learned} / ${totalTrailItemCount} ${currentTrackConfig.unitPlural}`,
+      focus: currentTrackConfig.introFocus,
+    },
+    {
+      name: activeTrack === "kanji" ? "Radicals Trail" : "Dakuten Trail",
+      progress: "Locked for phase 2",
+      focus: activeTrack === "kanji" ? "Pattern clues" : "Voiced kana",
+    },
+    {
+      name: activeTrack === "kanji" ? "Sumo Trail" : "Katakana Trail",
+      progress: activeTrack === "kanji" ? "Content loading next" : "Mount Katakana planned next",
+      focus: activeTrack === "kanji" ? "Ranks and match terms" : "Loanword recognition",
+    },
   ];
 
   const overviewStats = [
-    { label: "New", value: activeLessonKanji.length, tone: "border-cyan-200 bg-cyan-50 text-cyan-900" },
+    { label: "New", value: activeLessonItems.length, tone: "border-cyan-200 bg-cyan-50 text-cyan-900" },
     { label: "Due", value: overallStats.due, tone: "border-amber-200 bg-amber-50 text-amber-900" },
     { label: "Learned", value: overallStats.learned, tone: "border-emerald-200 bg-emerald-50 text-emerald-900" },
     { label: "Accuracy", value: `${overallStats.accuracy}%`, tone: "border-violet-200 bg-violet-50 text-violet-900" },
@@ -653,9 +729,9 @@ function App() {
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-700">Mount Kanji</p>
-                <span className="text-xs text-slate-500">Meaning-first recognition and review</span>
+                <span className="text-xs text-slate-500">{currentTrackConfig.dashboardSubtitle}</span>
               </div>
-              <h1 className="mt-1 text-2xl font-bold leading-tight text-slate-900 sm:text-3xl">Base Camp Dashboard</h1>
+              <h1 className="mt-1 text-2xl font-bold leading-tight text-slate-900 sm:text-3xl">{currentTrackConfig.dashboardTitle}</h1>
             </div>
 
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:min-w-[25rem]">
@@ -671,136 +747,153 @@ function App() {
 
         {screen === "dashboard" && (
           <section className="rounded-2xl border border-white/70 bg-white/80 p-3 shadow-lg backdrop-blur">
-            <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
-              <div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <h2 className="text-lg font-bold text-slate-900">Trails</h2>
-                  <p className="text-sm text-slate-600">
-                    Next lesson: {seedLessons[lessonCursor]?.title ?? "Beginner Lesson"} ({(lessonCursor % trailLessonCount) + 1}/
-                    {trailLessonCount})
-                  </p>
+            <div className="grid gap-3 xl:grid-cols-[18rem_minmax(0,1fr)]">
+              <article className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                <h2 className="text-sm font-semibold text-slate-900">Climbs</h2>
+                <div className="mt-3 space-y-2">
+                  {(["kanji", "hiragana"] as StudyTrack[]).map((track) => (
+                    <button
+                      key={track}
+                      type="button"
+                      onClick={() => switchTrack(track)}
+                      className={`w-full rounded-xl border px-3 py-3 text-left transition ${
+                        activeTrack === track
+                          ? "border-cyan-600 bg-cyan-50 text-cyan-950"
+                          : "border-slate-200 bg-slate-50 text-slate-900 hover:border-cyan-400 hover:bg-cyan-50"
+                      }`}
+                    >
+                      <p className="text-sm font-semibold">{trackConfigs[track].label}</p>
+                      <p className="mt-1 text-xs text-slate-600">{trackConfigs[track].dashboardSubtitle}</p>
+                    </button>
+                  ))}
+                  <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3 py-3 text-left">
+                    <p className="text-sm font-semibold text-slate-700">Mount Katakana</p>
+                    <p className="mt-1 text-xs text-slate-500">Planned next phase</p>
+                  </div>
                 </div>
-              </div>
+              </article>
 
-              <div className="grid w-full gap-2 sm:grid-cols-2 xl:w-auto xl:grid-cols-3">
-                <button
-                  type="button"
-                  onClick={startLesson}
-                  className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700"
-                >
-                  Start Lesson ({SESSION_TARGET_MINUTES} min)
-                </button>
-                <button
-                  type="button"
-                  onClick={openReviewQueue}
-                  className="rounded-xl border border-slate-900 bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-100"
-                >
-                  Start Reviews ({overallStats.due})
-                </button>
-                <button
-                  type="button"
-                  onClick={openDictionary}
-                  className="rounded-xl border border-cyan-700 bg-cyan-50 px-4 py-2 text-sm font-semibold text-cyan-900 transition hover:bg-cyan-100"
-                >
-                  Dictionary
-                </button>
-                <button
-                  type="button"
-                  onClick={openProgress}
-                  className="rounded-xl border border-emerald-700 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-900 transition hover:bg-emerald-100"
-                >
-                  Progress
-                </button>
-                <button
-                  type="button"
-                  onClick={openSettings}
-                  className="rounded-xl border border-violet-700 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-900 transition hover:bg-violet-100"
-                >
-                  Settings
-                </button>
-                <button
-                  type="button"
-                  onClick={openSumo}
-                  className="rounded-xl border border-amber-700 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-900 transition hover:bg-amber-100"
-                >
-                  Sumo Terms
-                </button>
-              </div>
-            </div>
-
-            <div className="mt-3 grid gap-2 md:grid-cols-3">
-              {trails.map((trail) => (
-                <article key={trail.name} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <h3 className="text-sm font-semibold text-slate-900">{trail.name}</h3>
-                      <p className="mt-1 text-xs text-slate-600">{trail.focus}</p>
+              <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h2 className="text-lg font-bold text-slate-900">Trails</h2>
+                      <p className="text-sm text-slate-600">
+                        Next lesson: {currentLessonDefinition?.title ?? "Trail Lesson"} ({(currentLessonCursor % trailLessonCount) + 1}/{trailLessonCount})
+                      </p>
                     </div>
-                    <p className="text-xs font-medium text-slate-800">{trail.progress}</p>
                   </div>
-                </article>
-              ))}
-            </div>
 
-            <div className="mt-3 grid gap-3 lg:grid-cols-2">
-              <article className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-                <h3 className="text-sm font-semibold text-slate-900">Study Snapshot</h3>
-                <div className="mt-2 grid grid-cols-2 gap-2">
-                  <div className="rounded-xl bg-slate-50 p-2.5">
-                    <p className="text-xs uppercase tracking-wide text-slate-500">Attempts</p>
-                    <p className="mt-1 text-lg font-bold text-slate-900">{quizAttempts.length}</p>
-                  </div>
-                  <div className="rounded-xl bg-slate-50 p-2.5">
-                    <p className="text-xs uppercase tracking-wide text-slate-500">Mastered</p>
-                    <p className="mt-1 text-lg font-bold text-slate-900">{overallStats.mastered}</p>
+                  <div className="grid w-full gap-2 sm:grid-cols-2 xl:w-auto xl:grid-cols-3">
+                    <button type="button" onClick={startLesson} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
+                      Start Lesson ({SESSION_TARGET_MINUTES} min)
+                    </button>
+                    <button type="button" onClick={() => startReviewQueue()} className="rounded-xl border border-slate-900 bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-100">
+                      Start Reviews ({overallStats.due})
+                    </button>
+                    <button type="button" onClick={() => setScreen("dictionary")} className="rounded-xl border border-cyan-700 bg-cyan-50 px-4 py-2 text-sm font-semibold text-cyan-900 transition hover:bg-cyan-100">
+                      {activeTrack === "kanji" ? "Dictionary" : "Reference Chart"}
+                    </button>
+                    <button type="button" onClick={() => setScreen("progress")} className="rounded-xl border border-emerald-700 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-900 transition hover:bg-emerald-100">
+                      Progress
+                    </button>
+                    <button type="button" onClick={() => setScreen("settings")} className="rounded-xl border border-violet-700 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-900 transition hover:bg-violet-100">
+                      Settings
+                    </button>
+                    <button type="button" onClick={() => setScreen("sumo")} className="rounded-xl border border-amber-700 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-900 transition hover:bg-amber-100">
+                      Sumo Terms
+                    </button>
                   </div>
                 </div>
-              </article>
 
-              <article className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-                <h3 className="text-sm font-semibold text-slate-900">Recent Attempts</h3>
-                {recentAttempts.length === 0 && <p className="mt-1 text-sm text-slate-600">No attempts yet.</p>}
-                {recentAttempts.length > 0 && (
-                  <ul className="mt-1 space-y-1 text-sm text-slate-700">
-                    {recentAttempts.map((attempt) => {
-                      const kanji = kanjiById.get(attempt.kanjiId);
-                      return (
-                        <li key={attempt.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-1.5">
-                          <span className="font-semibold text-slate-900">{kanji?.character ?? "?"}</span>
-                          <span>{attempt.correct ? "Correct" : "Miss"}</span>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-              </article>
+                <div className="mt-3 grid gap-2 md:grid-cols-3">
+                  {trails.map((trail) => (
+                    <article key={trail.name} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <h3 className="text-sm font-semibold text-slate-900">{trail.name}</h3>
+                          <p className="mt-1 text-xs text-slate-600">{trail.focus}</p>
+                        </div>
+                        <p className="text-xs font-medium text-slate-800">{trail.progress}</p>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+
+                <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                  <article className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                    <h3 className="text-sm font-semibold text-slate-900">Study Snapshot</h3>
+                    <div className="mt-2 grid grid-cols-2 gap-2">
+                      <div className="rounded-xl bg-slate-50 p-2.5">
+                        <p className="text-xs uppercase tracking-wide text-slate-500">Attempts</p>
+                        <p className="mt-1 text-lg font-bold text-slate-900">{recentAttempts.length}</p>
+                      </div>
+                      <div className="rounded-xl bg-slate-50 p-2.5">
+                        <p className="text-xs uppercase tracking-wide text-slate-500">Mastered</p>
+                        <p className="mt-1 text-lg font-bold text-slate-900">{overallStats.mastered}</p>
+                      </div>
+                    </div>
+                  </article>
+
+                  <article className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                    <h3 className="text-sm font-semibold text-slate-900">Recent Attempts</h3>
+                    {recentAttempts.length === 0 && <p className="mt-1 text-sm text-slate-600">No attempts yet.</p>}
+                    {recentAttempts.length > 0 && (
+                      <ul className="mt-1 space-y-1 text-sm text-slate-700">
+                        {recentAttempts.map((attempt) => {
+                          const item = itemById.get(attempt.itemId);
+                          return (
+                            <li key={attempt.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-1.5">
+                              <span className="font-semibold text-slate-900">{item?.character ?? "?"}</span>
+                              <span>{attempt.correct ? "Correct" : "Miss"}</span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </article>
+                </div>
+              </div>
             </div>
           </section>
         )}
 
-        {screen === "lesson" && currentLessonKanji && (
+        {screen === "lesson" && currentLessonItem && (
           <section className="rounded-3xl border border-white/70 bg-white/85 p-4 shadow-lg backdrop-blur">
             <p className="text-sm font-semibold uppercase tracking-wide text-cyan-800">{activeLessonTitle}</p>
             <p className="text-sm font-semibold uppercase tracking-wide text-cyan-700">
-              Lesson Step {lessonIndex + 1} of {activeLessonKanji.length}
+              Lesson Step {lessonIndex + 1} of {activeLessonItems.length}
             </p>
             <div className="mt-3 rounded-2xl border border-cyan-100 bg-white p-4">
-              <p className="text-7xl font-bold text-slate-900">{currentLessonKanji.character}</p>
-              <p className="mt-3 text-2xl font-semibold text-slate-800">{currentLessonKanji.primaryMeaning}</p>
-              <p className="mt-2 text-slate-600">{currentLessonKanji.mnemonic}</p>
-              {settings.showFurigana && (
+              <p className="text-7xl font-bold text-slate-900">{currentLessonItem.character}</p>
+              <p className="mt-3 text-2xl font-semibold text-slate-800">{currentLessonItem.primaryMeaning}</p>
+              {currentLessonItem.lessonHint && <p className="mt-2 text-sm font-medium text-cyan-700">{currentLessonItem.lessonHint}</p>}
+              <p className="mt-2 text-slate-600">{currentLessonItem.mnemonic}</p>
+              {activeTrack === "kanji" && settings.showFurigana && (
                 <p className="mt-3 text-sm text-slate-500">
-                  Kun: {formatReadings(currentLessonKanji.kunyomi, settings.showRomaji)} | On: {formatReadings(currentLessonKanji.onyomi, settings.showRomaji)}
+                  Kun: {formatReadings(currentLessonItem.kunyomi, settings.showRomaji)} | On: {formatReadings(currentLessonItem.onyomi, settings.showRomaji)}
+                </p>
+              )}
+              {activeTrack === "hiragana" && (
+                <p className="mt-3 text-sm text-slate-500">
+                  Sound: <span className="font-semibold text-slate-800">{currentLessonItem.romaji}</span>
+                  {settings.showRomaji && currentLessonItem.kunyomi[0] ? ` | Kana: ${currentLessonItem.kunyomi[0]}` : ""}
                 </p>
               )}
             </div>
             <div className="mt-3 flex justify-end">
               <button
                 type="button"
-                onClick={advanceLesson}
+                onClick={() => {
+                  if (lessonIndex + 1 >= activeLessonItems.length) {
+                    setScreen("quiz");
+                    return;
+                  }
+                  setLessonIndex((value) => value + 1);
+                }}
                 className="rounded-full bg-cyan-700 px-5 py-2 text-sm font-semibold text-white transition hover:bg-cyan-600"
               >
-                {lessonIndex + 1 === activeLessonKanji.length ? "Start Quiz" : "Next Kanji"}
+                {lessonIndex + 1 === activeLessonItems.length ? "Start Quiz" : `Next ${activeTrack === "kanji" ? "Kanji" : "Character"}`}
               </button>
             </div>
           </section>
@@ -811,7 +904,9 @@ function App() {
             <p className="text-sm font-semibold uppercase tracking-wide text-emerald-700">
               Quiz {quizIndex + 1} of {quizQuestions.length}
             </p>
-            <h2 className="mt-3 text-2xl font-bold text-slate-900">Which kanji means "{currentQuestion.promptMeaning}"?</h2>
+            <h2 className="mt-3 text-2xl font-bold text-slate-900">
+              {currentTrackConfig.promptLabel} "{currentQuestion.promptLabel}"?
+            </h2>
 
             <div className="mt-3 grid grid-cols-2 gap-2">
               {currentQuestion.options.map((option) => (
@@ -828,7 +923,7 @@ function App() {
 
             {lastAnswerCorrect !== null && (
               <p className={`mt-4 text-sm font-semibold ${lastAnswerCorrect ? "text-emerald-700" : "text-rose-700"}`}>
-                {lastAnswerCorrect ? "Correct. Nice climb." : "Not this one. You will see it again soon."}
+                {lastAnswerCorrect ? "Correct." : "Not this one. It will come back in review."}
               </p>
             )}
           </section>
@@ -839,7 +934,7 @@ function App() {
             <p className="text-sm font-semibold uppercase tracking-wide text-violet-700">Session Summary</p>
             <h2 className="mt-2 text-3xl font-bold text-slate-900">Trail Segment Complete</h2>
             <p className="mt-3 text-slate-700">
-              You answered {quizScore} out of {quizQuestions.length} correctly and updated each kanji's hit, miss, and review weight.
+              You answered {quizScore} out of {quizQuestions.length} correctly and updated each {currentTrackConfig.unitSingular}'s hit, miss, and review weight.
             </p>
             <p className="mt-1 text-sm text-slate-600">Wrong answers raise review weight. Correct answers lower it and build streaks.</p>
 
@@ -859,27 +954,15 @@ function App() {
             </div>
 
             <div className="mt-4 flex flex-wrap gap-3">
-              {sessionMissedKanjiIds.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => startReviewQueue(sessionMissedKanjiIds)}
-                  className="rounded-full bg-amber-700 px-5 py-2 text-sm font-semibold text-white transition hover:bg-amber-600"
-                >
-                  Review Missed ({sessionMissedKanjiIds.length})
+              {sessionMissedItemIds.length > 0 && (
+                <button type="button" onClick={() => startReviewQueue(sessionMissedItemIds)} className="rounded-full bg-amber-700 px-5 py-2 text-sm font-semibold text-white transition hover:bg-amber-600">
+                  Review Missed ({sessionMissedItemIds.length})
                 </button>
               )}
-              <button
-                type="button"
-                onClick={returnToDashboard}
-                className="rounded-full bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition hover:bg-slate-700"
-              >
+              <button type="button" onClick={returnToDashboard} className="rounded-full bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
                 Back To Base Camp
               </button>
-              <button
-                type="button"
-                onClick={startLesson}
-                className="rounded-full bg-cyan-700 px-5 py-2 text-sm font-semibold text-white transition hover:bg-cyan-600"
-              >
+              <button type="button" onClick={startLesson} className="rounded-full bg-cyan-700 px-5 py-2 text-sm font-semibold text-white transition hover:bg-cyan-600">
                 Climb Another Segment
               </button>
             </div>
@@ -893,11 +976,7 @@ function App() {
                 <p className="text-sm font-semibold uppercase tracking-wide text-amber-700">Sumo</p>
                 <h2 className="mt-1 text-3xl font-bold text-slate-900">Tournament Terms Browser</h2>
               </div>
-              <button
-                type="button"
-                onClick={returnToDashboard}
-                className="rounded-full bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition hover:bg-slate-700"
-              >
+              <button type="button" onClick={returnToDashboard} className="rounded-full bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
                 Back To Base Camp
               </button>
             </div>
@@ -922,9 +1001,7 @@ function App() {
                 <option value="match">Match techniques</option>
                 <option value="events">Events & prizes</option>
               </select>
-              <p className="flex items-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700">
-                {filteredSumoTerms.length} terms
-              </p>
+              <p className="flex items-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700">{filteredSumoTerms.length} terms</p>
             </div>
 
             <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
@@ -932,9 +1009,7 @@ function App() {
                 <article key={term.id} className="rounded-2xl border border-amber-100 bg-white p-3 shadow-sm">
                   <div className="flex items-start justify-between gap-2">
                     <p className="text-3xl font-bold text-slate-900">{term.term}</p>
-                    <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-900">
-                      {term.category}
-                    </span>
+                    <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-900">{term.category}</span>
                   </div>
                   <p className="mt-1 text-sm text-slate-700">{term.readingKana}</p>
                   {settings.showRomaji && <p className="text-xs text-slate-500">{term.readingRomaji}</p>}
@@ -950,46 +1025,35 @@ function App() {
             <p className="text-sm font-semibold uppercase tracking-wide text-amber-700">Review Queue</p>
             <h2 className="mt-2 text-3xl font-bold text-slate-900">Trouble Spot Review</h2>
 
-            {!currentReviewKanji && (
+            {!currentReviewItem && (
               <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
                 <p className="text-lg font-semibold text-emerald-900">Queue complete.</p>
                 <p className="mt-2 text-emerald-800">You finished {reviewDoneCount} review cards in this session.</p>
-                <button
-                  type="button"
-                  onClick={returnToDashboard}
-                  className="mt-4 rounded-full bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition hover:bg-slate-700"
-                >
+                <button type="button" onClick={returnToDashboard} className="mt-4 rounded-full bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
                   Back To Base Camp
                 </button>
               </div>
             )}
 
-            {currentReviewKanji && (
+            {currentReviewItem && (
               <div className="mt-3">
                 <div className="rounded-2xl border border-amber-100 bg-white p-4 text-center">
-                  <p className="text-7xl font-bold text-slate-900">{currentReviewKanji.character}</p>
-                  <p className="mt-3 text-xl font-semibold text-slate-800">{currentReviewKanji.primaryMeaning}</p>
-                  {settings.showFurigana && (
+                  <p className="text-7xl font-bold text-slate-900">{currentReviewItem.character}</p>
+                  <p className="mt-3 text-xl font-semibold text-slate-800">{currentReviewItem.primaryMeaning}</p>
+                  {activeTrack === "kanji" && settings.showFurigana && (
                     <p className="mt-2 text-xs text-slate-500">
-                      Kun: {formatReadings(currentReviewKanji.kunyomi, settings.showRomaji)} | On: {formatReadings(currentReviewKanji.onyomi, settings.showRomaji)}
+                      Kun: {formatReadings(currentReviewItem.kunyomi, settings.showRomaji)} | On: {formatReadings(currentReviewItem.onyomi, settings.showRomaji)}
                     </p>
                   )}
-                  <p className="mt-2 text-sm text-slate-600">Mark whether you got it or missed it. Misses raise review weight so this kanji comes back sooner.</p>
+                  {activeTrack === "hiragana" && <p className="mt-2 text-xs text-slate-500">Sound: {currentReviewItem.romaji}</p>}
+                  <p className="mt-2 text-sm text-slate-600">Mark whether you got it or missed it. Misses raise review weight so this item comes back sooner.</p>
                 </div>
 
                 <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                  <button
-                    type="button"
-                    onClick={() => applyReviewResult(false)}
-                    className="rounded-xl bg-rose-600 px-4 py-3 text-sm font-semibold text-white hover:bg-rose-500"
-                  >
+                  <button type="button" onClick={() => applyReviewResult(false)} className="rounded-xl bg-rose-600 px-4 py-3 text-sm font-semibold text-white hover:bg-rose-500">
                     Missed It
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => applyReviewResult(true)}
-                    className="rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-500"
-                  >
+                  <button type="button" onClick={() => applyReviewResult(true)} className="rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-500">
                     Got It
                   </button>
                 </div>
@@ -1005,14 +1069,10 @@ function App() {
           <section className="rounded-2xl border border-white/70 bg-white/85 p-3 shadow-lg backdrop-blur">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <p className="text-sm font-semibold uppercase tracking-wide text-sky-700">Dictionary</p>
-                <h2 className="mt-1 text-2xl font-bold text-slate-900">JLPT Kanji Browser</h2>
+                <p className="text-sm font-semibold uppercase tracking-wide text-sky-700">{activeTrack === "kanji" ? "Dictionary" : "Reference"}</p>
+                <h2 className="mt-1 text-2xl font-bold text-slate-900">{currentTrackConfig.dictionaryTitle}</h2>
               </div>
-              <button
-                type="button"
-                onClick={returnToDashboard}
-                className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700"
-              >
+              <button type="button" onClick={returnToDashboard} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
                 Back To Base Camp
               </button>
             </div>
@@ -1022,95 +1082,118 @@ function App() {
                 type="text"
                 value={dictionaryQuery}
                 onChange={(event) => setDictionaryQuery(event.currentTarget.value)}
-                placeholder="Search by kanji, meaning, or reading"
+                placeholder={activeTrack === "kanji" ? "Search by kanji, meaning, or reading" : "Search by kana, romaji, row, or tag"}
                 className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-cyan-400 focus:ring-2 md:col-span-2"
               />
-              <select
-                value={dictionaryRadical}
-                onChange={(event) => setDictionaryRadical(event.currentTarget.value)}
-                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-cyan-400 focus:ring-2"
-              >
-                <option value="all">All radicals</option>
-                {availableRadicals.map((radical) => (
-                  <option key={radical} value={radical}>
-                    Radical: {radical}
-                  </option>
-                ))}
-              </select>
-              <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={dictionarySumoOnly}
-                  onChange={(event) => setDictionarySumoOnly(event.currentTarget.checked)}
-                  className="h-4 w-4 accent-cyan-700"
-                />
-                Sumo only
-              </label>
+              {activeTrack === "kanji" ? (
+                <>
+                  <select
+                    value={dictionaryRadical}
+                    onChange={(event) => setDictionaryRadical(event.currentTarget.value)}
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-cyan-400 focus:ring-2"
+                  >
+                    <option value="all">All radicals</option>
+                    {availableRadicals.map((radical) => (
+                      <option key={radical} value={radical}>
+                        Radical: {radical}
+                      </option>
+                    ))}
+                  </select>
+                  <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700">
+                    <input type="checkbox" checked={dictionarySumoOnly} onChange={(event) => setDictionarySumoOnly(event.currentTarget.checked)} className="h-4 w-4 accent-cyan-700" />
+                    Sumo only
+                  </label>
+                </>
+              ) : (
+                <p className="flex items-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 md:col-span-2">
+                  Vowels, K-row, S-row, T-row, and N-row
+                </p>
+              )}
             </div>
 
             <div className="mt-2 flex items-center justify-between gap-3 text-sm text-slate-600">
-              <p>Showing {filteredDictionaryKanji.length} kanji</p>
-              {selectedDictionaryKanji && <p className="hidden lg:block">Selected: {selectedDictionaryKanji.character}</p>}
+              <p>Showing {filteredDictionaryItems.length} {currentTrackConfig.unitPlural}</p>
+              {selectedDictionaryItem && <p className="hidden lg:block">Selected: {selectedDictionaryItem.character}</p>}
             </div>
 
             <div className="mt-3 grid gap-3 lg:h-[calc(100vh-12rem)] lg:grid-cols-[minmax(0,1.55fr)_22rem]">
               <div className="rounded-2xl border border-slate-200 bg-white p-3 lg:min-h-0">
-                <div className="grid grid-cols-5 gap-2 md:grid-cols-8 lg:grid-cols-8 xl:grid-cols-10 lg:max-h-full lg:overflow-y-auto lg:pr-1">
-                  {filteredDictionaryKanji.map((kanji) => (
+                <div className={`grid gap-2 lg:max-h-full lg:overflow-y-auto lg:pr-1 ${activeTrack === "kanji" ? "grid-cols-5 md:grid-cols-8 lg:grid-cols-8 xl:grid-cols-10" : "grid-cols-5 md:grid-cols-5"}`}>
+                  {filteredDictionaryItems.map((item) => (
                     <button
-                      key={kanji.id}
+                      key={item.id}
                       type="button"
-                      onClick={() => setSelectedKanjiId(kanji.id)}
+                      onClick={() => setSelectedItemId(item.id)}
                       className={`rounded-xl border px-2 py-3 text-2xl font-bold transition ${
-                        selectedDictionaryKanji?.id === kanji.id
+                        selectedDictionaryItem?.id === item.id
                           ? "border-cyan-600 bg-cyan-100 text-cyan-950"
                           : "border-slate-200 bg-slate-50 text-slate-900 hover:border-cyan-400 hover:bg-cyan-50"
                       }`}
                     >
-                      {kanji.character}
+                      {item.character}
                     </button>
                   ))}
                 </div>
               </div>
 
               <div className="rounded-2xl border border-slate-200 bg-white p-4 lg:sticky lg:top-3 lg:max-h-[calc(100vh-12rem)] lg:self-start lg:overflow-y-auto">
-                {!selectedDictionaryKanji && <p className="text-sm text-slate-600">No kanji matches current filters.</p>}
-                {selectedDictionaryKanji && (
+                {!selectedDictionaryItem && <p className="text-sm text-slate-600">No matches for the current filters.</p>}
+                {selectedDictionaryItem && (
                   <>
-                    <p className="text-6xl font-bold text-slate-900">{selectedDictionaryKanji.character}</p>
-                    <p className="mt-2 text-2xl font-semibold text-slate-800">{selectedDictionaryKanji.primaryMeaning}</p>
-                    <p className="mt-1 text-sm text-slate-600">{selectedDictionaryKanji.meanings.join(", ")}</p>
+                    <p className="text-6xl font-bold text-slate-900">{selectedDictionaryItem.character}</p>
+                    <p className="mt-2 text-2xl font-semibold text-slate-800">{selectedDictionaryItem.primaryMeaning}</p>
+                    <p className="mt-1 text-sm text-slate-600">{selectedDictionaryItem.meanings.join(", ")}</p>
 
                     <dl className="mt-4 space-y-2 text-sm">
-                      {settings.showFurigana && (
+                      {activeTrack === "kanji" && settings.showFurigana && (
                         <>
                           <div className="flex justify-between gap-3">
                             <dt className="text-slate-500">On reading</dt>
-                            <dd className="font-semibold text-slate-800">{formatReadings(selectedDictionaryKanji.onyomi, settings.showRomaji)}</dd>
+                            <dd className="font-semibold text-slate-800">{formatReadings(selectedDictionaryItem.onyomi, settings.showRomaji)}</dd>
                           </div>
                           <div className="flex justify-between gap-3">
                             <dt className="text-slate-500">Kun reading</dt>
-                            <dd className="font-semibold text-slate-800">{formatReadings(selectedDictionaryKanji.kunyomi, settings.showRomaji)}</dd>
+                            <dd className="font-semibold text-slate-800">{formatReadings(selectedDictionaryItem.kunyomi, settings.showRomaji)}</dd>
                           </div>
                         </>
                       )}
-                      <div className="flex justify-between gap-3">
-                        <dt className="text-slate-500">Radical</dt>
-                        <dd className="font-semibold text-slate-800">{selectedDictionaryKanji.radical}</dd>
-                      </div>
+                      {activeTrack === "hiragana" && (
+                        <>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-slate-500">Romaji</dt>
+                            <dd className="font-semibold text-slate-800">{selectedDictionaryItem.romaji}</dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-slate-500">Row</dt>
+                            <dd className="font-semibold capitalize text-slate-800">{selectedDictionaryItem.row?.replace("-", " ")}</dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-slate-500">Column</dt>
+                            <dd className="font-semibold text-slate-800">{selectedDictionaryItem.column}</dd>
+                          </div>
+                        </>
+                      )}
+                      {selectedDictionaryItem.radical && (
+                        <div className="flex justify-between gap-3">
+                          <dt className="text-slate-500">Radical</dt>
+                          <dd className="font-semibold text-slate-800">{selectedDictionaryItem.radical}</dd>
+                        </div>
+                      )}
                       <div className="flex justify-between gap-3">
                         <dt className="text-slate-500">Strokes</dt>
-                        <dd className="font-semibold text-slate-800">{selectedDictionaryKanji.strokeCount}</dd>
+                        <dd className="font-semibold text-slate-800">{selectedDictionaryItem.strokeCount}</dd>
                       </div>
-                      <div className="flex justify-between gap-3">
-                        <dt className="text-slate-500">JLPT</dt>
-                        <dd className="font-semibold text-slate-800">{selectedDictionaryKanji.jlptLevel ?? "-"}</dd>
-                      </div>
+                      {selectedDictionaryItem.jlptLevel && (
+                        <div className="flex justify-between gap-3">
+                          <dt className="text-slate-500">JLPT</dt>
+                          <dd className="font-semibold text-slate-800">{selectedDictionaryItem.jlptLevel}</dd>
+                        </div>
+                      )}
                     </dl>
 
                     <p className="mt-4 text-xs font-semibold uppercase tracking-wide text-slate-500">Tags</p>
                     <div className="mt-2 flex flex-wrap gap-2">
-                      {selectedDictionaryKanji.tags.map((tag) => (
+                      {selectedDictionaryItem.tags.map((tag) => (
                         <span key={tag} className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
                           {tag}
                         </span>
@@ -1121,15 +1204,11 @@ function App() {
                       <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
                         <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Study Status</p>
                         <p className="mt-1 text-sm font-semibold text-slate-900">{selectedDictionaryProgress.status}</p>
-                        <p className="text-xs text-slate-600">
-                          Current streak: {selectedDictionaryProgress.currentStreak}, Best streak: {selectedDictionaryProgress.bestStreak}
-                        </p>
+                        <p className="text-xs text-slate-600">Current streak: {selectedDictionaryProgress.currentStreak}, Best streak: {selectedDictionaryProgress.bestStreak}</p>
                         <p className="text-xs text-slate-600">Review weight: {selectedDictionaryProgress.reviewWeight}, Accuracy: {accuracyPercent(selectedDictionaryProgress)}%</p>
                         <button
                           type="button"
-                          onClick={() =>
-                            setKanjiExcluded(selectedDictionaryKanji.id, !selectedDictionaryProgress.excludedFromLessons)
-                          }
+                          onClick={() => setItemExcluded(selectedDictionaryItem.id, !selectedDictionaryProgress.excludedFromLessons)}
                           className={`mt-3 w-full rounded-xl px-3 py-2 text-sm font-semibold transition ${
                             selectedDictionaryProgress.excludedFromLessons
                               ? "border border-emerald-700 bg-emerald-50 text-emerald-900 hover:bg-emerald-100"
@@ -1154,11 +1233,7 @@ function App() {
                 <p className="text-sm font-semibold uppercase tracking-wide text-emerald-700">Progress</p>
                 <h2 className="mt-1 text-3xl font-bold text-slate-900">Trail Performance</h2>
               </div>
-              <button
-                type="button"
-                onClick={returnToDashboard}
-                className="rounded-full bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition hover:bg-slate-700"
-              >
+              <button type="button" onClick={returnToDashboard} className="rounded-full bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
                 Back To Base Camp
               </button>
             </div>
@@ -1174,7 +1249,7 @@ function App() {
               </article>
               <article className="rounded-2xl border border-violet-200 bg-violet-50 p-4">
                 <p className="text-xs uppercase tracking-wide text-violet-700">Total Attempts</p>
-                <p className="mt-2 text-3xl font-bold text-violet-950">{quizAttempts.length}</p>
+                <p className="mt-2 text-3xl font-bold text-violet-950">{recentAttempts.length}</p>
               </article>
               <article className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
                 <p className="text-xs uppercase tracking-wide text-amber-700">Overall Accuracy</p>
@@ -1184,14 +1259,14 @@ function App() {
 
             <div className="mt-3 grid gap-3 lg:grid-cols-2">
               <article className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
-                <h3 className="text-lg font-semibold text-slate-900">Weakest Kanji</h3>
-                {weakKanji.length === 0 && <p className="mt-2 text-sm text-slate-600">No misses recorded yet.</p>}
-                {weakKanji.length > 0 && (
+                <h3 className="text-lg font-semibold text-slate-900">Weakest {activeTrack === "kanji" ? "Kanji" : "Characters"}</h3>
+                {weakItems.length === 0 && <p className="mt-2 text-sm text-slate-600">No misses recorded yet.</p>}
+                {weakItems.length > 0 && (
                   <ul className="mt-2 space-y-1 text-sm text-slate-700">
-                    {weakKanji.map(({ row, kanji }) => (
-                      <li key={row.kanjiId} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2">
-                        <span className="text-2xl font-bold text-slate-900">{kanji?.character}</span>
-                        <span>{kanji?.primaryMeaning}</span>
+                    {weakItems.map(({ row, item }) => (
+                      <li key={row.itemId} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2">
+                        <span className="text-2xl font-bold text-slate-900">{item?.character}</span>
+                        <span>{item?.primaryMeaning}</span>
                         <span className="font-semibold text-rose-700">misses: {row.incorrectCount}</span>
                       </li>
                     ))}
@@ -1200,14 +1275,14 @@ function App() {
               </article>
 
               <article className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
-                <h3 className="text-lg font-semibold text-slate-900">Strongest Kanji</h3>
-                {strongKanji.length === 0 && <p className="mt-2 text-sm text-slate-600">No wins recorded yet.</p>}
-                {strongKanji.length > 0 && (
+                <h3 className="text-lg font-semibold text-slate-900">Strongest {activeTrack === "kanji" ? "Kanji" : "Characters"}</h3>
+                {strongItems.length === 0 && <p className="mt-2 text-sm text-slate-600">No wins recorded yet.</p>}
+                {strongItems.length > 0 && (
                   <ul className="mt-2 space-y-1 text-sm text-slate-700">
-                    {strongKanji.map(({ row, kanji }) => (
-                      <li key={row.kanjiId} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2">
-                        <span className="text-2xl font-bold text-slate-900">{kanji?.character}</span>
-                        <span>{kanji?.primaryMeaning}</span>
+                    {strongItems.map(({ row, item }) => (
+                      <li key={row.itemId} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2">
+                        <span className="text-2xl font-bold text-slate-900">{item?.character}</span>
+                        <span>{item?.primaryMeaning}</span>
                         <span className="font-semibold text-emerald-700">hits: {row.correctCount}</span>
                       </li>
                     ))}
@@ -1225,11 +1300,7 @@ function App() {
                 <p className="text-sm font-semibold uppercase tracking-wide text-violet-700">Settings</p>
                 <h2 className="mt-1 text-3xl font-bold text-slate-900">Study Preferences</h2>
               </div>
-              <button
-                type="button"
-                onClick={returnToDashboard}
-                className="rounded-full bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition hover:bg-slate-700"
-              >
+              <button type="button" onClick={returnToDashboard} className="rounded-full bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
                 Back To Base Camp
               </button>
             </div>
@@ -1240,34 +1311,15 @@ function App() {
                 <div className="mt-3 space-y-2">
                   <label className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
                     <span className="text-sm font-medium text-slate-800">Show Furigana Readings</span>
-                    <input
-                      type="checkbox"
-                      checked={settings.showFurigana}
-                      onChange={(event) => {
-                        const checked = event.currentTarget.checked;
-                        setSettings((previous) => ({ ...previous, showFurigana: checked }));
-                      }}
-                      className="h-5 w-5 accent-violet-700"
-                    />
+                    <input type="checkbox" checked={settings.showFurigana} onChange={(event) => setSettings((previous) => ({ ...previous, showFurigana: event.currentTarget.checked }))} className="h-5 w-5 accent-violet-700" />
                   </label>
 
                   <label className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
                     <span className="text-sm font-medium text-slate-800">Show Romaji</span>
-                    <input
-                      type="checkbox"
-                      checked={settings.showRomaji}
-                      onChange={(event) => {
-                        const checked = event.currentTarget.checked;
-                        setSettings((previous) => ({ ...previous, showRomaji: checked }));
-                      }}
-                      disabled={!settings.showFurigana}
-                      className="h-5 w-5 accent-violet-700 disabled:opacity-50"
-                    />
+                    <input type="checkbox" checked={settings.showRomaji} onChange={(event) => setSettings((previous) => ({ ...previous, showRomaji: event.currentTarget.checked }))} disabled={!settings.showFurigana} className="h-5 w-5 accent-violet-700 disabled:opacity-50" />
                   </label>
 
-                  {!settings.showFurigana && (
-                    <p className="text-xs text-slate-500">Enable furigana first to show romaji.</p>
-                  )}
+                  {!settings.showFurigana && <p className="text-xs text-slate-500">Enable furigana first to show romaji.</p>}
                 </div>
               </article>
 
@@ -1276,28 +1328,14 @@ function App() {
                 <div className="mt-3 space-y-2">
                   <label className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
                     <span className="text-sm font-medium text-slate-800">Reduced Motion</span>
-                    <input
-                      type="checkbox"
-                      checked={settings.reducedMotion}
-                      onChange={(event) => {
-                        const checked = event.currentTarget.checked;
-                        setSettings((previous) => ({ ...previous, reducedMotion: checked }));
-                      }}
-                      className="h-5 w-5 accent-violet-700"
-                    />
+                    <input type="checkbox" checked={settings.reducedMotion} onChange={(event) => setSettings((previous) => ({ ...previous, reducedMotion: event.currentTarget.checked }))} className="h-5 w-5 accent-violet-700" />
                   </label>
 
                   <label className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
                     <span className="text-sm font-medium text-slate-800">Text Size</span>
                     <select
                       value={settings.textScale}
-                      onChange={(event) => {
-                        const nextScale = Number(event.currentTarget.value) as TextScale;
-                        setSettings((previous) => ({
-                          ...previous,
-                          textScale: nextScale,
-                        }));
-                      }}
+                      onChange={(event) => setSettings((previous) => ({ ...previous, textScale: Number(event.currentTarget.value) as TextScale }))}
                       className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-sm"
                     >
                       <option value={90}>Compact</option>

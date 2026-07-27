@@ -1,9 +1,9 @@
-export type KanjiStatus = "new" | "learning" | "familiar" | "mastered";
+export type StudyStatus = "new" | "learning" | "familiar" | "mastered";
 
-export interface UserKanjiProgress {
+export interface UserStudyProgress {
   id: string;
-  kanjiId: string;
-  status: KanjiStatus;
+  itemId: string;
+  status: StudyStatus;
   correctCount: number;
   incorrectCount: number;
   currentStreak: number;
@@ -14,11 +14,14 @@ export interface UserKanjiProgress {
   lastReviewedAt: string | null;
 }
 
+export type KanjiStatus = StudyStatus;
+export type UserKanjiProgress = UserStudyProgress;
+
 export interface UserStats {
   currentStreak: number;
   longestStreak: number;
-  totalKanjiIntroduced: number;
-  totalKanjiMastered: number;
+  totalItemsIntroduced: number;
+  totalItemsMastered: number;
   totalReviewsCompleted: number;
   overallAccuracy: number;
 }

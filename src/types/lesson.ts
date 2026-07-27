@@ -2,7 +2,7 @@ export interface Lesson {
   id: string;
   title: string;
   level: number;
-  kanjiIds: string[];
+  itemIds: string[];
   vocabularyIds: string[];
   prerequisites: string[];
 }

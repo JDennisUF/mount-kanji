@@ -4,7 +4,7 @@ export interface SeedLesson {
   id: string;
   title: string;
   focus: string;
-  kanjiIds: string[];
+  itemIds: string[];
 }
 
 const LESSON_BATCH_SIZE = 5;
@@ -46,7 +46,7 @@ function buildSeedLessons(): SeedLesson[] {
       id: `lesson_beginner_${String(i + 1).padStart(3, "0")}`,
       title: lessonTitles[i] ?? `JLPT Lesson ${i + 1}`,
       focus: "Meaning-first recognition",
-      kanjiIds: buildKanjiIdsForLesson(offset),
+      itemIds: buildKanjiIdsForLesson(offset),
     });
   }
 

@@ -1,10 +1,10 @@
-import type { KanjiStatus, UserKanjiProgress } from "../types";
+import type { StudyStatus, UserStudyProgress } from "../types";
 
 const MAX_REVIEW_WEIGHT = 10;
 const WRONG_REVIEW_PENALTY = 3;
 const CORRECT_REVIEW_REDUCTION = 1;
 
-export function resolveKanjiStatus(correctCount: number, incorrectCount: number, currentStreak: number): KanjiStatus {
+export function resolveKanjiStatus(correctCount: number, incorrectCount: number, currentStreak: number): StudyStatus {
   if (correctCount === 0 && incorrectCount === 0) {
     return "new";
   }
@@ -24,7 +24,7 @@ export function resolveKanjiStatus(correctCount: number, incorrectCount: number,
 }
 
 export class ReviewTracker {
-  applyResult(progress: UserKanjiProgress, correct: boolean, now: Date = new Date()): UserKanjiProgress {
+  applyResult(progress: UserStudyProgress, correct: boolean, now: Date = new Date()): UserStudyProgress {
     const correctCount = progress.correctCount + (correct ? 1 : 0);
     const incorrectCount = progress.incorrectCount + (correct ? 0 : 1);
     const currentStreak = correct ? progress.currentStreak + 1 : 0;
@@ -46,7 +46,7 @@ export class ReviewTracker {
     };
   }
 
-  getQueue(progressRows: UserKanjiProgress[]): UserKanjiProgress[] {
+  getQueue(progressRows: UserStudyProgress[]): UserStudyProgress[] {
     return progressRows
       .filter((row) => !row.excludedFromLessons && row.reviewWeight > 0)
       .sort((a, b) => {

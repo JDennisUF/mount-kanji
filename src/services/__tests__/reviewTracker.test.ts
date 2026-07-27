@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import { ReviewTracker } from "../reviewTracker";
-import type { UserKanjiProgress } from "../../types";
+import type { UserStudyProgress } from "../../types";
 
-function progressSeed(overrides: Partial<UserKanjiProgress> = {}): UserKanjiProgress {
+function progressSeed(overrides: Partial<UserStudyProgress> = {}): UserStudyProgress {
   return {
     id: "p1",
-    kanjiId: "kanji_n5_001",
+    itemId: "kanji_n5_001",
     status: "new",
     correctCount: 0,
     incorrectCount: 0,
@@ -48,11 +48,11 @@ describe("ReviewTracker", () => {
 
   it("sorts review queue by weight and ignores excluded kanji", () => {
     const queue = tracker.getQueue([
-      progressSeed({ kanjiId: "a", reviewWeight: 1 }),
-      progressSeed({ kanjiId: "b", reviewWeight: 5 }),
-      progressSeed({ kanjiId: "c", reviewWeight: 8, excludedFromLessons: true }),
+      progressSeed({ itemId: "a", reviewWeight: 1 }),
+      progressSeed({ itemId: "b", reviewWeight: 5 }),
+      progressSeed({ itemId: "c", reviewWeight: 8, excludedFromLessons: true }),
     ]);
 
-    expect(queue.map((item) => item.kanjiId)).toEqual(["b", "a"]);
+    expect(queue.map((item) => item.itemId)).toEqual(["b", "a"]);
   });
 });

@@ -10,7 +10,7 @@ export type QuizType =
 export interface QuizAttempt {
   id: string;
   questionType: QuizType;
-  kanjiId: string;
+  itemId: string;
   correct: boolean;
   answeredAt: string;
 }
