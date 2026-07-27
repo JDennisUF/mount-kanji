@@ -5,9 +5,11 @@
 Change Mount Kanji, Mount Hiragana, and Mount Katakana so that:
 
 1. Each symbol is reviewed until the learner answers it correctly 5 times.
-2. After the 5th correct answer, the symbol is marked `known`.
-3. Known symbols are removed from future testing.
-4. Each symbol that becomes known advances the learner one step farther up that mount.
+2. The 5 correct answers are cumulative, not consecutive.
+3. Wrong answers do not subtract from prior correct answers.
+4. After the 5th correct answer, the symbol is marked `known`.
+5. Known symbols are removed from future testing unless we explicitly choose to reintroduce them later.
+6. Each symbol that becomes known advances the learner one step farther up that mount.
 
 ## Current State
 
@@ -24,6 +26,10 @@ The current repo has review plumbing, but it does not yet match the target behav
   - [src/types/kanji.ts](/home/jasondennis/code/mount-kanji/src/types/kanji.ts) already has a generic `StudyItem` with `script`.
   - Progress and review naming is still mostly kanji-specific (`UserKanjiProgress`, `kanjiId`).
   - [src/types/quiz.ts](/home/jasondennis/code/mount-kanji/src/types/quiz.ts) uses `itemId`, while `progressRepository.ts` still validates `kanjiId`.
+- The current UI also has a separate review mode in [src/App.tsx](/home/jasondennis/code/mount-kanji/src/App.tsx):
+  - dashboard `Start Reviews`
+  - a `reviewQueue`
+  - a `Trouble Spot Review` screen with manual `Got It` / `Missed It` buttons
 
 ## Implementation Plan
 
@@ -33,21 +39,20 @@ Before adding shared mount logic, make progress types script-agnostic.
 
 - Rename or alias `UserKanjiProgress` to a generic type such as `UserItemProgress`.
 - Replace `kanjiId` with `itemId` everywhere progress is read, written, sorted, or tested.
-- Keep the type and repository interfaces compatible during rollout if needed, but the end state should use one item-based model for all scripts.
+- End with one item-based model for all scripts.
 - Extend `StudyTrack` in [src/types/kanji.ts](/home/jasondennis/code/mount-kanji/src/types/kanji.ts) from `"kanji" | "hiragana"` to include `"katakana"`.
 
 Why this first:
 
-- The 5-correct rule is supposed to work identically across three mounts.
-- Keeping kanji-specific naming in the review layer will create duplication or brittle branching as Hiragana and Katakana land.
+- The 5-correct rule needs to work identically across all three mounts.
+- Keeping kanji-specific naming in the review layer will create duplication as Hiragana and Katakana land.
 
-### 2. Replace the current status system with a simple known/not-known review rule
+### 2. Replace the current status system with a simple 5-correct known rule
 
 Move the review logic away from weighted familiarity tiers.
 
 - Define a single threshold constant, for example `KNOWN_CORRECT_THRESHOLD = 5`.
-- Update the progress status model so it cleanly represents the new behavior.
-- A minimal option is:
+- Update the progress status model to something minimal:
   - `new`
   - `learning`
   - `known`
@@ -56,29 +61,54 @@ Move the review logic away from weighted familiarity tiers.
   - if the new `correctCount >= 5`, set status to `known`
 - On an incorrect answer:
   - increment `incorrectCount`
-  - keep the item eligible for review unless it is already known and the product explicitly allows known items to be reintroduced later
+  - do not subtract from `correctCount`
+  - do not apply any penalty multiplier or streak reset rule beyond recording the miss
 
-Important implementation note:
+Implementation consequence:
 
-- The user request says “correctly review each symbol 5 times,” which reads as cumulative correct answers, not necessarily 5 in a row.
-- Unless you decide otherwise, `currentStreak`, `bestStreak`, and `reviewWeight` become unnecessary for correctness and queue eligibility.
+- `currentStreak`, `bestStreak`, and `reviewWeight` are no longer needed for correctness or completion.
 
-### 3. Change queue generation so known items are excluded
+### 3. Remove weighted review logic and reevaluate the standalone Review flow
 
-Update the queue rules in [src/services/reviewTracker.ts](/home/jasondennis/code/mount-kanji/src/services/reviewTracker.ts).
+The current standalone review flow exists to support:
 
-- Replace the current `reviewWeight > 0` filter with a direct status-based rule:
-  - include items where `status !== "known"`
-  - continue excluding `excludedFromLessons`
-- Keep queue ordering simple and stable.
-- Good default ordering:
+- `reviewWeight`
+- “due now” behavior
+- a separate manual retry loop
+
+Those assumptions weaken once the product rule becomes “5 cumulative correct answers, no penalties for misses.”
+
+Recommended direction:
+
+- remove `reviewWeight`
+- remove due-queue behavior
+- remove any logic that depends on misses making cards come back sooner
+
+The product decision is now:
+
+- delete the standalone Review screen
+- do not keep a second persistent review mode
+- if users still need extra practice, return missed symbols during the next quiz flow instead of sending them to a separate page
+
+KISS view:
+
+- a second persistent screen with `Got It` / `Missed It` controls is hard to justify if the main quiz already records correct and incorrect attempts
+- unless review is doing something materially different, it is probably duplication
+
+### 4. Keep any remaining queue logic status-based and simple
+
+If any retry or practice queue remains, it should be simple.
+
+- include items where `status !== "known"`
+- continue excluding `excludedFromLessons`
+- prefer ordering by:
   - lower `correctCount` first
   - then higher `incorrectCount`
   - then oldest `lastReviewedAt`
 
-This matches the new product goal better than maintaining an SRS weight field that no longer controls completion.
+With the standalone Review screen removed, any queue helper becomes quiz support logic rather than a full review subsystem.
 
-### 4. Add mount-progress calculation tied to newly known symbols
+### 5. Add mount-progress calculation tied to newly known symbols
 
 Introduce an explicit mount-progress model instead of inferring it indirectly.
 
@@ -92,8 +122,8 @@ Introduce an explicit mount-progress model instead of inferring it indirectly.
 
 Recommended rule:
 
-- Do not store `stepsClimbed` as an independently mutable counter unless the UI needs animation history.
-- Prefer deriving it from progress state to avoid drift between review results and mount position.
+- do not store `stepsClimbed` as an independently mutable counter unless the UI needs animation history
+- prefer deriving it from progress state to avoid drift
 
 If the UI needs to trigger a one-step animation the moment an item becomes known:
 
@@ -101,55 +131,60 @@ If the UI needs to trigger a one-step animation the moment an item becomes known
   - `becameKnown: boolean`
   - `updatedProgress`
 
-That gives the UI a reliable signal for animation without making persistence more fragile.
-
-### 5. Make lesson and mount content share one progression contract
+### 6. Make lesson and mount content share one progression contract
 
 The lesson catalogs already batch symbols into groups of 5 in:
 
 - [src/data/seed/lessonCatalog.ts](/home/jasondennis/code/mount-kanji/src/data/seed/lessonCatalog.ts)
 - [src/data/seed/hiraganaLessonCatalog.ts](/home/jasondennis/code/mount-kanji/src/data/seed/hiraganaLessonCatalog.ts)
 
-The review rule should not depend on lesson boundaries.
+Rules for the new design:
 
-- Any symbol introduced in a mount should remain in the active pool until it becomes known.
-- Lesson completion and mount advancement should be separate concerns:
-  - lessons control introduction order
-  - known-count controls climb progress
+- mount progress is based on all symbols in the mount, not only introduced symbols
+- lessons still control introduction order
+- lesson completion and mount advancement remain separate concerns
+- known-count controls climb progress
 
-This avoids a common failure mode where lesson completion says the learner progressed even though symbols still need review.
+Possible extension:
 
-### 6. Add a localStorage migration path
+- add milestone markers such as:
+  - basic Hiragana complete
+  - basic Katakana complete
+  - N5 Kanji complete
+  - later Kanji bands
 
-Existing local data will not match the new shape cleanly.
+Use mountain-climbing terminology for these milestone markers.
 
-Update [src/repositories/progressRepository.ts](/home/jasondennis/code/mount-kanji/src/repositories/progressRepository.ts) so it can load old progress safely and normalize it.
+Recommended naming:
 
-Migration responsibilities:
+- `Base Camp` for the starting point
+- `Camp` markers for intermediate milestones
+- `Summit` for full completion
 
-- accept older records that still use `kanjiId`
-- map `kanjiId -> itemId`
-- translate old statuses:
-  - `mastered` -> `known`
-  - `familiar` / `learning` -> `learning`
-  - `new` -> `new`
-- decide what to do with old counts above the new threshold
-  - simplest rule: any item with `correctCount >= 5` loads as `known`
-- drop fields that are no longer needed once the app no longer reads them
+These camps should be display milestones layered on top of full-mount progress, not replacements for full summit progress.
 
-This migration should be handled at load time so users do not lose progress.
+### 7. Reset persistence shape instead of migrating old progress
 
-### 7. Update quiz-attempt persistence and validation
+You explicitly do not care about preserving existing progress, so the implementation can stay simpler.
+
+Recommended approach:
+
+- switch the stored progress format to the new `itemId`-based model
+- if existing localStorage data does not match the new shape, discard it and start fresh
+- if useful, bump the storage key name so the app naturally ignores old persisted data
+- remove compatibility code that would only exist to support the old kanji-specific schema
+
+### 8. Update quiz-attempt persistence and validation
 
 [src/types/quiz.ts](/home/jasondennis/code/mount-kanji/src/types/quiz.ts) already uses `itemId`, but [src/repositories/progressRepository.ts](/home/jasondennis/code/mount-kanji/src/repositories/progressRepository.ts) still validates `kanjiId`.
 
 Fix that mismatch while touching the repository layer.
 
 - make the validator accept `itemId`
-- decide whether backward compatibility with `kanjiId` is needed for stored attempts
-- ensure review analytics keep working for all three scripts
+- drop backward compatibility with `kanjiId` if we are intentionally resetting stored progress
+- ensure attempt persistence works for all three scripts
 
-### 8. Tighten test coverage around the new rule
+### 9. Tighten test coverage around the new rule
 
 Replace the current `reviewTracker` tests in [src/services/__tests__/reviewTracker.test.ts](/home/jasondennis/code/mount-kanji/src/services/__tests__/reviewTracker.test.ts) with cases that match the new contract.
 
@@ -158,56 +193,94 @@ Required test cases:
 - a new item stays `new` until first attempt
 - a correct answer increments `correctCount`
 - an incorrect answer increments `incorrectCount`
+- no miss ever reduces `correctCount`
 - an item becomes `known` exactly on the 5th correct answer
-- once known, the item is excluded from the review queue
-- queue generation only returns non-known items
-- migration loads legacy `kanjiId` records correctly
+- once known, the item is excluded from any remaining practice queue
 - mount progress equals known-count for each script
+- storage reset behavior ignores old incompatible progress payloads
 
-### 9. UI integration work after the data model change
+### 10. Add an explicit mount-progress visualization on the Progress page
 
-There is not enough checked-in UI code in this branch to map exact components, but the UI work should follow this contract:
+The Progress page should show all three mounts at once and make overall climb state legible immediately.
 
-- review result screen should indicate when a symbol becomes known
-- mount display should advance one step on that transition
-- known symbols should disappear from upcoming review prompts
-- summary surfaces should show:
+Implementation requirements:
+
+- show dedicated progress visuals for:
+  - Mount Kanji
+  - Mount Hiragana
+  - Mount Katakana
+- the visual must show both:
+  - completed climb
+  - remaining climb
+- the visual must respond directly to derived mount progress across all symbols in that mount
+- each newly known symbol should move the indicator forward by one step
+
+Recommended UI contract:
+
+- quiz result UI should indicate when a symbol becomes known
+- mount progress should animate forward immediately on that transition
+- known symbols should disappear from future testing
+- the Progress page should show:
   - symbols known
   - symbols remaining
-  - progress toward summit for the active mount
+  - percentage to summit
+  - current step and total steps
+  - a visual mountain indicator with a clear current position marker
 
-The UI should consume derived state from the review layer, not reimplement the 5-correct rule itself.
+Recommended visual approach:
+
+- use a simple, stylistic mountain path or trail for each mount
+- place a climber marker at the current position
+- visibly differentiate completed and remaining segments
+- label the base and summit so direction is obvious
+- show camp markers for milestone goals like basic kana complete or N5 complete
+- keep the component data-driven so the same UI pattern works for Kanji, Hiragana, and Katakana
+
+Suggested component shape:
+
+- `MountProgressCard`
+  - accepts `track`, `knownCount`, `remainingCount`, `totalSteps`, and `percentComplete`
+- optional `MountProgressTrail`
+  - renders the visual path and current marker based on those values
 
 ## Suggested Delivery Order
 
 1. Normalize progress and repository types to `itemId`.
 2. Add `katakana` to the shared script model.
 3. Simplify `ReviewTracker` to the 5-correct rule.
-4. Add derived mount-progress helpers per script.
-5. Add migration logic for existing localStorage data.
-6. Update tests.
-7. Wire the UI to known transitions and mount-step updates.
+4. Remove `reviewWeight`, due-now behavior, and other penalty-driven review logic.
+5. Delete the standalone Review screen and route misses back into future quizzes.
+6. Add derived mount-progress helpers per script.
+7. Reset persistence to the new storage shape.
+8. Update tests.
+9. Build the Progress page mount visualization and wire it to known transitions and mount-step updates.
 
-## Decisions Needed
+## Decisions Made
 
-These points need confirmation before implementation:
+These are now fixed product decisions:
 
-1. Are the 5 correct answers cumulative, or do they need to be consecutive?
-2. If the learner gets a symbol wrong after previously answering it correctly a few times, do earlier correct answers still count?
-3. Should a known symbol stay permanently known, or can it ever be reintroduced later?
-4. Should mount progress be exactly `knownCount / totalSymbolsInThatMount`, or do you want lesson-gated progress where only introduced symbols count toward the current climb?
-5. Should the app review only symbols that have already been introduced by lessons, or can any mount symbol appear once the learner starts that mount?
-6. Do you want the existing status names preserved in the UI, or is it acceptable to simplify them to `new`, `learning`, and `known`?
+1. The 5 correct answers are cumulative.
+2. Wrong answers do not erase prior correct answers.
+3. Mount progress is based on all symbols in the mount.
+4. The Progress page should show all three mounts at once.
+5. The visual should be a simple, stylistic mountain with a climber advancing up it.
+6. No miss penalty should exist if it creates a frustrating user experience.
+7. The standalone Review screen should be removed.
+8. Known is permanent.
+9. Missed symbols should return during later quizzes, not in a separate review mode.
+10. Status labels can be simplified to `new`, `learning`, and `known`.
+11. The climber should animate forward immediately when a symbol becomes `known`.
+
+## Open Questions
+
+These still need confirmation before implementation:
+
+1. Do you want the camp names to stay generic, or do you want custom names per mount after the first implementation?
 
 ## Recommended Defaults
 
 If you want the simplest coherent implementation, use these answers:
 
-1. 5 correct answers are cumulative.
-2. Wrong answers do not erase prior correct answers.
-3. Known symbols stay known and are removed from testing.
-4. Mount progress equals the number of known symbols in that mount.
-5. Only introduced symbols are eligible for review.
-6. Statuses are simplified to `new`, `learning`, and `known`.
+1. Use generic camp names first, then add custom mount-specific camp names later if needed.
 
 That design is the cleanest fit for the product rule you described, and it keeps Kanji, Hiragana, and Katakana on one shared progression system.

@@ -1132,7 +1132,7 @@ function App() {
                 <p className="flex items-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 md:col-span-2">
                   {activeTrack === "hiragana"
                     ? "Full hiragana chart with voiced and contracted sounds."
-                    : "Full basic katakana chart. Dakuten and combinations come next."}
+                    : "Full katakana chart with voiced and contracted sounds."}
                 </p>
               )}
             </div>
