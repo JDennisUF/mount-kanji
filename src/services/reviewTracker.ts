@@ -1,23 +1,14 @@
 import type { StudyStatus, UserStudyProgress } from "../types";
 
-const MAX_REVIEW_WEIGHT = 10;
-const WRONG_REVIEW_PENALTY = 3;
-const CORRECT_REVIEW_REDUCTION = 1;
+export const KNOWN_CORRECT_THRESHOLD = 5;
 
-export function resolveKanjiStatus(correctCount: number, incorrectCount: number, currentStreak: number): StudyStatus {
+export function resolveStudyStatus(correctCount: number, incorrectCount: number): StudyStatus {
   if (correctCount === 0 && incorrectCount === 0) {
     return "new";
   }
 
-  const totalAttempts = correctCount + incorrectCount;
-  const accuracy = totalAttempts > 0 ? correctCount / totalAttempts : 0;
-
-  if (correctCount >= 8 && accuracy >= 0.9 && currentStreak >= 5) {
-    return "mastered";
-  }
-
-  if (correctCount >= 3 || currentStreak >= 3) {
-    return "familiar";
+  if (correctCount >= KNOWN_CORRECT_THRESHOLD) {
+    return "known";
   }
 
   return "learning";
@@ -27,20 +18,12 @@ export class ReviewTracker {
   applyResult(progress: UserStudyProgress, correct: boolean, now: Date = new Date()): UserStudyProgress {
     const correctCount = progress.correctCount + (correct ? 1 : 0);
     const incorrectCount = progress.incorrectCount + (correct ? 0 : 1);
-    const currentStreak = correct ? progress.currentStreak + 1 : 0;
-    const bestStreak = correct ? Math.max(progress.bestStreak, currentStreak) : progress.bestStreak;
-    const reviewWeight = correct
-      ? Math.max(0, progress.reviewWeight - CORRECT_REVIEW_REDUCTION)
-      : Math.min(MAX_REVIEW_WEIGHT, progress.reviewWeight + WRONG_REVIEW_PENALTY);
 
     return {
       ...progress,
-      status: resolveKanjiStatus(correctCount, incorrectCount, currentStreak),
+      status: resolveStudyStatus(correctCount, incorrectCount),
       correctCount,
       incorrectCount,
-      currentStreak,
-      bestStreak,
-      reviewWeight,
       lastAnsweredCorrect: correct,
       lastReviewedAt: now.toISOString(),
     };
@@ -48,10 +31,10 @@ export class ReviewTracker {
 
   getQueue(progressRows: UserStudyProgress[]): UserStudyProgress[] {
     return progressRows
-      .filter((row) => !row.excludedFromLessons && row.reviewWeight > 0)
+      .filter((row) => !row.excludedFromLessons && row.status !== "known")
       .sort((a, b) => {
-        if (b.reviewWeight !== a.reviewWeight) {
-          return b.reviewWeight - a.reviewWeight;
+        if (a.correctCount !== b.correctCount) {
+          return a.correctCount - b.correctCount;
         }
 
         if (b.incorrectCount !== a.incorrectCount) {

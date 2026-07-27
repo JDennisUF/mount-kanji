@@ -1,4 +1,4 @@
-export type StudyStatus = "new" | "learning" | "familiar" | "mastered";
+export type StudyStatus = "new" | "learning" | "known";
 
 export interface UserStudyProgress {
   id: string;
@@ -6,9 +6,6 @@ export interface UserStudyProgress {
   status: StudyStatus;
   correctCount: number;
   incorrectCount: number;
-  currentStreak: number;
-  bestStreak: number;
-  reviewWeight: number;
   excludedFromLessons: boolean;
   lastAnsweredCorrect: boolean | null;
   lastReviewedAt: string | null;
@@ -21,7 +18,7 @@ export interface UserStats {
   currentStreak: number;
   longestStreak: number;
   totalItemsIntroduced: number;
-  totalItemsMastered: number;
+  totalItemsKnown: number;
   totalReviewsCompleted: number;
   overallAccuracy: number;
 }

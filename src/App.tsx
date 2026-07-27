@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { toRomaji } from "wanakana";
 
+import mountainStatusKanji from "./assets/mount-kanji.svg";
+import mountainStatusHiragana from "./assets/mount-hiragana.svg";
+import mountainStatusKatakana from "./assets/mount-katakana.svg";
 import { beginnerKanjiPool } from "./data/seed/beginnerSet";
 import { hiraganaLessons } from "./data/seed/hiraganaLessonCatalog";
 import { hiraganaPool } from "./data/seed/hiraganaSet";
@@ -10,25 +13,31 @@ import { seedLessons, type SeedLesson } from "./data/seed/lessonCatalog";
 import { sumoTerms, type SumoTerm } from "./data/seed/sumoTerms";
 import { createProgressRepository } from "./repositories/progressRepositoryFactory";
 import type { ProgressRepository } from "./repositories/progressRepository";
-import { ReviewTracker, resolveKanjiStatus } from "./services/reviewTracker";
+import { KNOWN_CORRECT_THRESHOLD, ReviewTracker, resolveStudyStatus } from "./services/reviewTracker";
 import type { QuizAttempt, StudyItem, StudyTrack, UserStudyProgress } from "./types";
 
-type Screen =
-  | "dashboard"
-  | "lesson"
-  | "quiz"
-  | "review"
-  | "summary"
-  | "dictionary"
-  | "progress"
-  | "settings"
-  | "sumo";
+type Screen = "dashboard" | "lesson" | "quiz" | "summary" | "dictionary" | "progress" | "settings" | "sumo";
 
 interface QuizQuestion {
   itemId: string;
   promptLabel: string;
   options: string[];
   correctOption: string;
+}
+
+interface MountProgress {
+  track: StudyTrack;
+  label: string;
+  knownCount: number;
+  remainingCount: number;
+  totalSteps: number;
+  percentComplete: number;
+}
+
+interface KnownEvent {
+  itemId: string;
+  track: StudyTrack;
+  timestamp: number;
 }
 
 type TextScale = 90 | 100 | 110 | 125;
@@ -46,7 +55,16 @@ type LessonCursorState = Record<StudyTrack, number>;
 const SESSION_TARGET_MINUTES = "5-10";
 const LESSON_CURSOR_STORAGE_KEY = "mount-kanji-lesson-cursor-v2";
 const SETTINGS_STORAGE_KEY = "mount-kanji-settings";
-const REVIEW_TRAIL_INSERTS = 2;
+const REVISIT_INSERTS = 2;
+const TRAIL_POINTS: Array<{ x: number; y: number }> = [
+  { x: 38, y: 92 },
+  { x: 52, y: 82 },
+  { x: 44, y: 68 },
+  { x: 58, y: 56 },
+  { x: 49, y: 44 },
+  { x: 56, y: 32 },
+  { x: 49, y: 21 },
+];
 
 const DEFAULT_SETTINGS: AppSettings = {
   showFurigana: true,
@@ -63,6 +81,57 @@ const DEFAULT_LESSON_CURSORS: LessonCursorState = {
 
 const reviewTracker = new ReviewTracker();
 
+const mountainImages: Record<StudyTrack, string> = {
+  kanji: mountainStatusKanji,
+  hiragana: mountainStatusHiragana,
+  katakana: mountainStatusKatakana,
+};
+
+const trackArtThemes: Record<
+  StudyTrack,
+  {
+    accent: string;
+    campReachedFill: string;
+    campReachedStroke: string;
+    campPendingFill: string;
+    campPendingStroke: string;
+    climberFill: string;
+    climberStroke: string;
+    climberText: string;
+  }
+> = {
+  kanji: {
+    accent: "#0f766e",
+    campReachedFill: "#06b6d4",
+    campReachedStroke: "#155e75",
+    campPendingFill: "#cbd5e1",
+    campPendingStroke: "#ffffff",
+    climberFill: "#ecfeff",
+    climberStroke: "#155e75",
+    climberText: "#083344",
+  },
+  hiragana: {
+    accent: "#be185d",
+    campReachedFill: "#f43f5e",
+    campReachedStroke: "#9f1239",
+    campPendingFill: "#cbd5e1",
+    campPendingStroke: "#ffffff",
+    climberFill: "#fff1f2",
+    climberStroke: "#9f1239",
+    climberText: "#881337",
+  },
+  katakana: {
+    accent: "#b45309",
+    campReachedFill: "#f59e0b",
+    campReachedStroke: "#92400e",
+    campPendingFill: "#cbd5e1",
+    campPendingStroke: "#ffffff",
+    climberFill: "#fffbeb",
+    climberStroke: "#92400e",
+    climberText: "#78350f",
+  },
+};
+
 const trackConfigs: Record<
   StudyTrack,
   {
@@ -73,10 +142,8 @@ const trackConfigs: Record<
     introFocus: string;
     unitSingular: string;
     unitPlural: string;
-    itemLabel: string;
     promptLabel: string;
     dictionaryTitle: string;
-    focusFieldLabel: string;
     lessons: SeedLesson[];
     pool: StudyItem[];
   }
@@ -84,45 +151,39 @@ const trackConfigs: Record<
   kanji: {
     label: "Mount Kanji",
     dashboardTitle: "Base Camp Dashboard",
-    dashboardSubtitle: "Meaning-first recognition and review",
+    dashboardSubtitle: "Meaning-first recognition and steady summit progress",
     trailName: "Kanji Trail",
     introFocus: "Core recognition",
     unitSingular: "kanji",
     unitPlural: "kanji",
-    itemLabel: "meaning",
     promptLabel: "Which kanji means",
     dictionaryTitle: "JLPT Kanji Browser",
-    focusFieldLabel: "Meaning",
     lessons: seedLessons,
     pool: beginnerKanjiPool,
   },
   hiragana: {
     label: "Mount Hiragana",
     dashboardTitle: "Hiragana Base Camp",
-    dashboardSubtitle: "Sound-first recognition and review",
+    dashboardSubtitle: "Sound-first recognition and steady summit progress",
     trailName: "Hiragana Trail",
     introFocus: "Kana sound mapping",
     unitSingular: "character",
     unitPlural: "characters",
-    itemLabel: "sound",
     promptLabel: "Which hiragana sounds like",
     dictionaryTitle: "Hiragana Reference Chart",
-    focusFieldLabel: "Sound",
     lessons: hiraganaLessons,
     pool: hiraganaPool,
   },
   katakana: {
     label: "Mount Katakana",
     dashboardTitle: "Katakana Base Camp",
-    dashboardSubtitle: "Sound-first recognition for loanwords and names",
+    dashboardSubtitle: "Loanword and name recognition through repetition",
     trailName: "Katakana Trail",
     introFocus: "Angular kana mapping",
     unitSingular: "character",
     unitPlural: "characters",
-    itemLabel: "sound",
     promptLabel: "Which katakana sounds like",
     dictionaryTitle: "Katakana Reference Chart",
-    focusFieldLabel: "Sound",
     lessons: katakanaLessons,
     pool: katakanaPool,
   },
@@ -140,6 +201,10 @@ function shuffle<T>(items: T[]): T[] {
   return copy;
 }
 
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
 function createDefaultProgress(itemId: string): UserStudyProgress {
   return {
     id: `progress_${itemId}`,
@@ -147,9 +212,6 @@ function createDefaultProgress(itemId: string): UserStudyProgress {
     status: "new",
     correctCount: 0,
     incorrectCount: 0,
-    currentStreak: 0,
-    bestStreak: 0,
-    reviewWeight: 0,
     excludedFromLessons: false,
     lastAnsweredCorrect: null,
     lastReviewedAt: null,
@@ -160,53 +222,25 @@ function normalizeProgressRow(
   itemId: string,
   raw?: Partial<UserStudyProgress> & {
     status?: string;
-    consecutiveCorrect?: number;
     kanjiId?: string;
   },
 ): UserStudyProgress {
   const base = createDefaultProgress(itemId);
   const correctCount = typeof raw?.correctCount === "number" ? raw.correctCount : 0;
   const incorrectCount = typeof raw?.incorrectCount === "number" ? raw.incorrectCount : 0;
-  const currentStreak =
-    typeof raw?.currentStreak === "number"
-      ? raw.currentStreak
-      : typeof raw?.consecutiveCorrect === "number"
-        ? raw.consecutiveCorrect
-        : 0;
-  const bestStreak = typeof raw?.bestStreak === "number" ? raw.bestStreak : currentStreak;
-  const reviewWeight =
-    typeof raw?.reviewWeight === "number"
-      ? raw.reviewWeight
-      : (raw?.status as string | undefined) === "needs_review"
-        ? 3
-        : 0;
 
   return {
     ...base,
     ...raw,
     itemId,
     id: typeof raw?.id === "string" ? raw.id : base.id,
-    status: resolveKanjiStatus(correctCount, incorrectCount, currentStreak),
+    status: resolveStudyStatus(correctCount, incorrectCount),
     correctCount,
     incorrectCount,
-    currentStreak,
-    bestStreak,
-    reviewWeight,
     excludedFromLessons: Boolean(raw?.excludedFromLessons),
     lastAnsweredCorrect: typeof raw?.lastAnsweredCorrect === "boolean" ? raw.lastAnsweredCorrect : null,
     lastReviewedAt: typeof raw?.lastReviewedAt === "string" ? raw.lastReviewedAt : null,
   };
-}
-
-function uniqueByItemId(rows: UserStudyProgress[]): UserStudyProgress[] {
-  const seen = new Set<string>();
-  return rows.filter((row) => {
-    if (seen.has(row.itemId)) {
-      return false;
-    }
-    seen.add(row.itemId);
-    return true;
-  });
 }
 
 function toUtcDateKey(input: string): string {
@@ -291,18 +325,157 @@ function buildQuizQuestions(items: StudyItem[], pool: StudyItem[]): QuizQuestion
   });
 }
 
+function buildMountProgress(track: StudyTrack, progressByItem: Record<string, UserStudyProgress>): MountProgress {
+  const pool = trackConfigs[track].pool;
+  const totalSteps = pool.length;
+  const knownCount = pool.reduce((count, item) => count + ((progressByItem[item.id]?.status === "known" ? 1 : 0)), 0);
+
+  return {
+    track,
+    label: trackConfigs[track].label,
+    knownCount,
+    remainingCount: Math.max(0, totalSteps - knownCount),
+    totalSteps,
+    percentComplete: totalSteps === 0 ? 0 : Math.round((knownCount / totalSteps) * 100),
+  };
+}
+
+function interpolateTrailPoint(progressRatio: number): { x: number; y: number } {
+  const clampedRatio = clamp(progressRatio, 0, 1);
+
+  if (clampedRatio <= 0) {
+    return { ...TRAIL_POINTS[0] };
+  }
+
+  if (clampedRatio >= 1) {
+    return { ...TRAIL_POINTS[TRAIL_POINTS.length - 1] };
+  }
+
+  const scaled = clampedRatio * (TRAIL_POINTS.length - 1);
+  const index = Math.floor(scaled);
+  const remainder = scaled - index;
+  const start = TRAIL_POINTS[index];
+  const end = TRAIL_POINTS[index + 1];
+
+  return {
+    x: start.x + (end.x - start.x) * remainder,
+    y: start.y + (end.y - start.y) * remainder,
+  };
+}
+
+function MountainTrail({
+  progress,
+  active,
+  reducedMotion,
+}: {
+  progress: MountProgress;
+  active: boolean;
+  reducedMotion: boolean;
+}) {
+  const progressRatio = progress.totalSteps === 0 ? 0 : progress.knownCount / progress.totalSteps;
+  const climberPoint = interpolateTrailPoint(progressRatio);
+  const artTheme = trackArtThemes[progress.track];
+  const mountainImage = mountainImages[progress.track];
+
+  return (
+    <div className="relative isolate h-56 w-56 shrink-0 overflow-hidden rounded-full border border-slate-200 bg-sky-50 shadow-sm">
+      <img src={mountainImage} alt="" className="block h-full w-full object-cover" aria-hidden="true" />
+      <div className="pointer-events-none absolute inset-0">
+        <div className="absolute left-1/2 top-[8%] -translate-x-1/2 rounded-full border border-amber-600 bg-amber-100 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-amber-900 shadow-sm">
+          Summit
+        </div>
+        <div
+          className={`absolute -translate-x-1/2 -translate-y-1/2 ${reducedMotion ? "" : "transition-all duration-500 ease-out"}`}
+          style={{
+            left: `${climberPoint.x}%`,
+            top: `${climberPoint.y}%`,
+          }}
+        >
+          <div
+            className="rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide shadow-sm"
+            style={{
+              backgroundColor: active ? artTheme.climberFill : "#ffffff",
+              borderColor: artTheme.climberStroke,
+              color: artTheme.climberText,
+            }}
+          >
+            You
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MountProgressCard({
+  progress,
+  active,
+  reducedMotion,
+  onSelect,
+}: {
+  progress: MountProgress;
+  active: boolean;
+  reducedMotion: boolean;
+  onSelect?: () => void;
+}) {
+  return (
+    <article
+      className={`rounded-2xl border bg-white p-4 shadow-sm ${active ? "border-cyan-400 ring-2 ring-cyan-100" : "border-slate-200"}`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">{progress.label}</p>
+          <h3 className="mt-1 text-xl font-bold text-slate-900">
+            {progress.knownCount} / {progress.totalSteps}
+          </h3>
+          <p className="mt-1 text-sm text-slate-600">{progress.percentComplete}% to the summit</p>
+          <p className="mt-1 text-sm text-slate-600">{progress.remainingCount} symbols left</p>
+        </div>
+
+        {onSelect && (
+          <button
+            type="button"
+            onClick={onSelect}
+            className={`rounded-xl px-3 py-2 text-sm font-semibold transition ${
+              active ? "bg-cyan-700 text-white hover:bg-cyan-600" : "border border-slate-300 bg-white text-slate-900 hover:bg-slate-50"
+            }`}
+          >
+            {active ? "Current Mount" : "Focus"}
+          </button>
+        )}
+      </div>
+
+      <div className="mt-4 flex items-center gap-4">
+        <MountainTrail progress={progress} active={active} reducedMotion={reducedMotion} />
+        <div className="min-w-0 flex-1 space-y-3">
+          <div className="rounded-xl bg-slate-50 p-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Current Position</p>
+            <p className="mt-1 text-sm font-semibold text-slate-900">
+              Step {progress.knownCount} of {progress.totalSteps}
+            </p>
+          </div>
+          <div className="rounded-xl bg-slate-50 p-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Known Threshold</p>
+            <p className="mt-1 text-sm font-semibold text-slate-900">{KNOWN_CORRECT_THRESHOLD} correct answers per symbol</p>
+          </div>
+        </div>
+      </div>
+    </article>
+  );
+}
+
 function App() {
   const [screen, setScreen] = useState<Screen>("dashboard");
   const [activeTrack, setActiveTrack] = useState<StudyTrack>("kanji");
   const [lessonIndex, setLessonIndex] = useState(0);
   const [quizIndex, setQuizIndex] = useState(0);
   const [quizScore, setQuizScore] = useState(0);
-  const [reviewDoneCount, setReviewDoneCount] = useState(0);
   const [lastAnswerCorrect, setLastAnswerCorrect] = useState<boolean | null>(null);
-  const [reviewFeedback, setReviewFeedback] = useState("");
+  const [dashboardMessage, setDashboardMessage] = useState("");
   const [progressByItem, setProgressByItem] = useState<Record<string, UserStudyProgress>>({});
   const [quizAttempts, setQuizAttempts] = useState<QuizAttempt[]>([]);
   const [sessionMissedItemIds, setSessionMissedItemIds] = useState<string[]>([]);
+  const [knownEvent, setKnownEvent] = useState<KnownEvent | null>(null);
   const [settings, setSettings] = useState<AppSettings>(() => {
     const serialized = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
     if (!serialized) {
@@ -327,7 +500,6 @@ function App() {
   });
   const [activeLessonTitle, setActiveLessonTitle] = useState<string>(trackConfigs.kanji.lessons[0]?.title ?? "Trail Lesson");
   const [quizQuestions, setQuizQuestions] = useState<QuizQuestion[]>([]);
-  const [reviewQueue, setReviewQueue] = useState<UserStudyProgress[]>([]);
   const [progressRepository, setProgressRepository] = useState<ProgressRepository | null>(null);
   const [isProgressHydrated, setIsProgressHydrated] = useState(false);
   const [lessonCursorByTrack, setLessonCursorByTrack] = useState<LessonCursorState>(() => {
@@ -362,10 +534,7 @@ function App() {
       }
 
       setProgressRepository(repository);
-      const [loadedProgress, loadedAttempts] = await Promise.all([
-        repository.loadAll(),
-        repository.loadQuizAttempts(),
-      ]);
+      const [loadedProgress, loadedAttempts] = await Promise.all([repository.loadAll(), repository.loadQuizAttempts()]);
 
       if (!isActive) {
         return;
@@ -415,49 +584,68 @@ function App() {
     setSelectedItemId(currentPool[0]?.id ?? "");
   }, [activeTrack, currentPool]);
 
+  const mountProgressByTrack = useMemo(
+    () =>
+      ({
+        kanji: buildMountProgress("kanji", progressByItem),
+        hiragana: buildMountProgress("hiragana", progressByItem),
+        katakana: buildMountProgress("katakana", progressByItem),
+      }) satisfies Record<StudyTrack, MountProgress>,
+    [progressByItem],
+  );
+
+  const activeMountProgress = mountProgressByTrack[activeTrack];
+
   const currentTrailItems = useMemo(
     () => currentPool.filter((item) => !(progressByItem[item.id]?.excludedFromLessons ?? false)),
     [currentPool, progressByItem],
   );
 
-  const totalTrailItemCount = currentTrailItems.length;
+  const currentPendingItems = useMemo(
+    () => currentTrailItems.filter((item) => (progressByItem[item.id]?.status ?? "new") !== "known"),
+    [currentTrailItems, progressByItem],
+  );
+
   const trailLessonCount = Math.max(1, currentLessons.length);
   const currentLessonCursor = lessonCursorByTrack[activeTrack] % Math.max(1, currentLessons.length);
   const currentLessonDefinition = currentLessons[currentLessonCursor];
   const currentLessonItem = activeLessonItems[lessonIndex];
   const currentQuestion = quizQuestions[quizIndex];
 
-  const overallStats = useMemo(() => {
-    const activeIds = new Set(currentTrailItems.map((item) => item.id));
-    const activeRows = Object.values(progressByItem).filter((row) => activeIds.has(row.itemId));
-    const learned = activeRows.filter((row) => row.correctCount + row.incorrectCount > 0).length;
-    const mastered = activeRows.filter((row) => row.status === "mastered").length;
-    const due = reviewTracker.getQueue(activeRows).length;
-    const totalCorrect = activeRows.reduce((sum, row) => sum + row.correctCount, 0);
-    const totalAttempts = activeRows.reduce((sum, row) => sum + row.correctCount + row.incorrectCount, 0);
-    const accuracy = totalAttempts > 0 ? Math.round((totalCorrect / totalAttempts) * 100) : 0;
-    const streaks = computeStreaks(
+  const trackAttempts = useMemo(
+    () =>
       quizAttempts.filter((attempt) => {
         const item = itemById.get(attempt.itemId);
         return item?.script === activeTrack;
       }),
-    );
+    [activeTrack, quizAttempts],
+  );
+
+  const overallStats = useMemo(() => {
+    const activeIds = new Set(currentTrailItems.map((item) => item.id));
+    const activeRows = Object.values(progressByItem).filter((row) => activeIds.has(row.itemId));
+    const studied = activeRows.filter((row) => row.correctCount + row.incorrectCount > 0).length;
+    const known = activeRows.filter((row) => row.status === "known").length;
+    const totalCorrect = activeRows.reduce((sum, row) => sum + row.correctCount, 0);
+    const totalAttempts = activeRows.reduce((sum, row) => sum + row.correctCount + row.incorrectCount, 0);
+    const accuracy = totalAttempts > 0 ? Math.round((totalCorrect / totalAttempts) * 100) : 0;
+    const streaks = computeStreaks(trackAttempts);
 
     return {
-      learned,
-      mastered,
-      due,
+      studied,
+      known,
+      attempts: totalAttempts,
       accuracy,
       currentStreak: streaks.currentStreak,
       longestStreak: streaks.longestStreak,
     };
-  }, [activeTrack, currentTrailItems, progressByItem, quizAttempts]);
+  }, [currentTrailItems, progressByItem, trackAttempts]);
 
   const weakItems = useMemo(() => {
     const currentIds = new Set(currentPool.map((item) => item.id));
     return Object.values(progressByItem)
       .filter((row) => currentIds.has(row.itemId) && row.incorrectCount > 0)
-      .sort((a, b) => b.incorrectCount - a.incorrectCount)
+      .sort((a, b) => b.incorrectCount - a.incorrectCount || a.correctCount - b.correctCount)
       .slice(0, 8)
       .map((row) => ({ row, item: itemById.get(row.itemId) }))
       .filter((entry) => entry.item);
@@ -467,20 +655,13 @@ function App() {
     const currentIds = new Set(currentPool.map((item) => item.id));
     return Object.values(progressByItem)
       .filter((row) => currentIds.has(row.itemId) && row.correctCount > 0)
-      .sort((a, b) => b.correctCount - a.correctCount)
+      .sort((a, b) => b.correctCount - a.correctCount || a.incorrectCount - b.incorrectCount)
       .slice(0, 8)
       .map((row) => ({ row, item: itemById.get(row.itemId) }))
       .filter((entry) => entry.item);
   }, [currentPool, progressByItem]);
 
-  const currentReviewProgress = reviewQueue[0];
-  const currentReviewItem = currentReviewProgress ? itemById.get(currentReviewProgress.itemId) : null;
-  const recentAttempts = quizAttempts
-    .filter((attempt) => {
-      const item = itemById.get(attempt.itemId);
-      return item?.script === activeTrack;
-    })
-    .slice(0, 5);
+  const recentAttempts = trackAttempts.slice(0, 5);
 
   const availableRadicals = useMemo(() => {
     if (activeTrack !== "kanji") {
@@ -551,7 +732,7 @@ function App() {
   }, [sumoCategory, sumoQuery]);
 
   function buildLessonSegment(lesson: SeedLesson | undefined): StudyItem[] {
-    if (currentTrailItems.length === 0) {
+    if (currentPendingItems.length === 0) {
       return [];
     }
 
@@ -559,21 +740,28 @@ function App() {
       lesson?.itemIds
         .map((itemId) => itemById.get(itemId))
         .filter((item): item is StudyItem => Boolean(item))
-        .filter((item) => !(progressByItem[item.id]?.excludedFromLessons ?? false)) ?? [];
+        .filter((item) => !(progressByItem[item.id]?.excludedFromLessons ?? false))
+        .filter((item) => (progressByItem[item.id]?.status ?? "new") !== "known") ?? [];
 
-    const priorityItems = currentTrailItems
-      .filter((item) => (progressByItem[item.id]?.reviewWeight ?? 0) > 0)
-      .sort((a, b) => {
-        const aProgress = progressByItem[a.id] ?? createDefaultProgress(a.id);
-        const bProgress = progressByItem[b.id] ?? createDefaultProgress(b.id);
-        if (bProgress.reviewWeight !== aProgress.reviewWeight) {
-          return bProgress.reviewWeight - aProgress.reviewWeight;
-        }
-        return bProgress.incorrectCount - aProgress.incorrectCount;
-      })
-      .slice(0, Math.min(REVIEW_TRAIL_INSERTS, baseLessonItems.length || REVIEW_TRAIL_INSERTS));
+    const revisitRows = reviewTracker
+      .getQueue(
+        currentTrailItems
+          .filter((item) => {
+            const progress = progressByItem[item.id] ?? createDefaultProgress(item.id);
+            return progress.correctCount + progress.incorrectCount > 0 && progress.status !== "known";
+          })
+          .map((item) => progressByItem[item.id] ?? createDefaultProgress(item.id)),
+      )
+      .slice(0, Math.max(REVISIT_INSERTS, baseLessonItems.length === 0 ? 5 : REVISIT_INSERTS));
 
-    const picked = [...priorityItems];
+    const picked: StudyItem[] = [];
+    for (const row of revisitRows) {
+      const item = itemById.get(row.itemId);
+      if (item && !picked.some((candidate) => candidate.id === item.id)) {
+        picked.push(item);
+      }
+    }
+
     for (const item of baseLessonItems) {
       if (!picked.some((candidate) => candidate.id === item.id)) {
         picked.push(item);
@@ -581,7 +769,7 @@ function App() {
     }
 
     if (picked.length === 0) {
-      return currentTrailItems.slice(0, Math.min(5, currentTrailItems.length));
+      return currentPendingItems.slice(0, Math.min(5, currentPendingItems.length));
     }
 
     return picked;
@@ -593,21 +781,27 @@ function App() {
     setLessonIndex(0);
     setQuizIndex(0);
     setQuizScore(0);
-    setReviewDoneCount(0);
-    setReviewFeedback("");
+    setDashboardMessage("");
     setLastAnswerCorrect(null);
     setSessionMissedItemIds([]);
-    setReviewQueue([]);
+    setKnownEvent(null);
   }
 
   function startLesson() {
-    if (currentTrailItems.length === 0) {
-      setReviewFeedback(`All ${currentTrackConfig.unitPlural} are currently excluded from future trails.`);
+    if (currentPendingItems.length === 0) {
+      setDashboardMessage(`${currentTrackConfig.label} is at the summit. Every symbol on this mount is known.`);
       setScreen("dashboard");
       return;
     }
 
     const lessonSegment = buildLessonSegment(currentLessonDefinition);
+    if (lessonSegment.length === 0) {
+      setDashboardMessage(`No eligible ${currentTrackConfig.unitPlural} are available for the next trail segment.`);
+      setScreen("dashboard");
+      return;
+    }
+
+    setDashboardMessage("");
     setActiveLessonItems(lessonSegment);
     setActiveLessonTitle(currentLessonDefinition?.title ?? `${currentTrackConfig.label} Lesson`);
     setLessonCursorByTrack((previous) => ({
@@ -618,24 +812,10 @@ function App() {
     setLessonIndex(0);
     setQuizIndex(0);
     setQuizScore(0);
-    setReviewDoneCount(0);
     setSessionMissedItemIds([]);
-    setReviewFeedback("");
     setLastAnswerCorrect(null);
-    setQuizQuestions(buildQuizQuestions(lessonSegment, currentTrailItems));
-  }
-
-  function startReviewQueue(seedItemIds: string[] = []) {
-    const currentIds = new Set(currentPool.map((item) => item.id));
-    const seeded = seedItemIds
-      .map((itemId) => progressByItem[itemId] ?? createDefaultProgress(itemId))
-      .filter((row) => currentIds.has(row.itemId) && !row.excludedFromLessons);
-    const liveQueue = reviewTracker.getQueue(Object.values(progressByItem)).filter((row) => currentIds.has(row.itemId));
-
-    setReviewQueue(uniqueByItemId([...seeded, ...liveQueue]));
-    setReviewDoneCount(0);
-    setReviewFeedback("");
-    setScreen("review");
+    setKnownEvent(null);
+    setQuizQuestions(buildQuizQuestions(lessonSegment, currentPendingItems));
   }
 
   function submitAnswer(option: string) {
@@ -654,14 +834,23 @@ function App() {
       answeredAt: new Date().toISOString(),
     };
 
+    const currentProgress = progressByItem[currentQuestion.itemId] ?? createDefaultProgress(currentQuestion.itemId);
+    const updatedProgress = reviewTracker.applyResult(currentProgress, isCorrect);
+    const becameKnown = currentProgress.status !== "known" && updatedProgress.status === "known";
+
     setQuizAttempts((existing) => [attempt, ...existing].slice(0, 1000));
-    setProgressByItem((previous) => {
-      const currentProgress = previous[currentQuestion.itemId] ?? createDefaultProgress(currentQuestion.itemId);
-      return {
-        ...previous,
-        [currentQuestion.itemId]: reviewTracker.applyResult(currentProgress, isCorrect),
-      };
-    });
+    setProgressByItem((previous) => ({
+      ...previous,
+      [currentQuestion.itemId]: updatedProgress,
+    }));
+
+    if (becameKnown) {
+      setKnownEvent({
+        itemId: currentQuestion.itemId,
+        track: activeTrack,
+        timestamp: Date.now(),
+      });
+    }
 
     if (isCorrect) {
       setQuizScore((value) => value + 1);
@@ -677,25 +866,6 @@ function App() {
     setQuizIndex((value) => value + 1);
   }
 
-  function applyReviewResult(correct: boolean) {
-    if (!currentReviewProgress) {
-      return;
-    }
-
-    const activeProgress = progressByItem[currentReviewProgress.itemId] ?? currentReviewProgress;
-    const updatedProgress = reviewTracker.applyResult(activeProgress, correct);
-
-    setProgressByItem((previous) => ({
-      ...previous,
-      [updatedProgress.itemId]: updatedProgress,
-    }));
-    setReviewDoneCount((count) => count + 1);
-    setReviewFeedback(
-      `${correct ? "Logged a hit" : "Logged a miss"} for ${currentReviewItem?.character ?? "item"}. Review weight is now ${updatedProgress.reviewWeight}.`,
-    );
-    setReviewQueue((queue) => queue.slice(1));
-  }
-
   function setItemExcluded(itemId: string, excludedFromLessons: boolean) {
     setProgressByItem((previous) => {
       const currentProgress = previous[itemId] ?? createDefaultProgress(itemId);
@@ -704,11 +874,9 @@ function App() {
         [itemId]: {
           ...currentProgress,
           excludedFromLessons,
-          reviewWeight: excludedFromLessons ? 0 : currentProgress.reviewWeight,
         },
       };
     });
-    setReviewQueue((queue) => queue.filter((row) => row.itemId !== itemId || !excludedFromLessons));
   }
 
   function returnToDashboard() {
@@ -716,35 +884,38 @@ function App() {
     setLessonIndex(0);
     setQuizIndex(0);
     setQuizScore(0);
-    setReviewDoneCount(0);
-    setReviewFeedback("");
     setLastAnswerCorrect(null);
   }
 
   const trails = [
     {
       name: currentTrackConfig.trailName,
-      progress: `${overallStats.learned} / ${totalTrailItemCount} ${currentTrackConfig.unitPlural}`,
+      progress: `${activeMountProgress.knownCount} / ${activeMountProgress.totalSteps} known`,
       focus: currentTrackConfig.introFocus,
     },
     {
-      name: activeTrack === "kanji" ? "Radicals Trail" : "Dakuten Trail",
-      progress: "Locked for phase 2",
-      focus: activeTrack === "kanji" ? "Pattern clues" : "Voiced kana",
+      name: "Progress Route",
+      progress: `${activeMountProgress.percentComplete}% complete`,
+      focus: "Steady ascent",
     },
     {
-      name: activeTrack === "kanji" ? "Sumo Trail" : activeTrack === "hiragana" ? "Katakana Trail" : "Loanword Trail",
-      progress: activeTrack === "kanji" ? "Content loading next" : activeTrack === "hiragana" ? "Available now" : "Content loading next",
-      focus: activeTrack === "kanji" ? "Ranks and match terms" : activeTrack === "hiragana" ? "Angular kana recognition" : "Loanword recognition",
+      name: activeTrack === "kanji" ? "Summit Route" : "Practice Route",
+      progress:
+        currentPendingItems.length === 0
+          ? "Summit reached"
+          : `${currentPendingItems.length} ${currentTrackConfig.unitPlural} still climbing`,
+      focus: activeTrack === "kanji" ? "N5 and beyond" : "Full script mastery",
     },
   ];
 
   const overviewStats = [
-    { label: "New", value: activeLessonItems.length, tone: "border-cyan-200 bg-cyan-50 text-cyan-900" },
-    { label: "Due", value: overallStats.due, tone: "border-amber-200 bg-amber-50 text-amber-900" },
-    { label: "Learned", value: overallStats.learned, tone: "border-emerald-200 bg-emerald-50 text-emerald-900" },
+    { label: "Known", value: activeMountProgress.knownCount, tone: "border-emerald-200 bg-emerald-50 text-emerald-900" },
+    { label: "Remaining", value: activeMountProgress.remainingCount, tone: "border-amber-200 bg-amber-50 text-amber-900" },
+    { label: "Attempts", value: overallStats.attempts, tone: "border-cyan-200 bg-cyan-50 text-cyan-900" },
     { label: "Accuracy", value: `${overallStats.accuracy}%`, tone: "border-violet-200 bg-violet-50 text-violet-900" },
   ];
+
+  const knownEventItem = knownEvent ? itemById.get(knownEvent.itemId) : null;
 
   return (
     <div
@@ -792,6 +963,9 @@ function App() {
                     >
                       <p className="text-sm font-semibold">{trackConfigs[track].label}</p>
                       <p className="mt-1 text-xs text-slate-600">{trackConfigs[track].dashboardSubtitle}</p>
+                      <p className="mt-2 text-xs font-semibold text-slate-800">
+                        {mountProgressByTrack[track].knownCount}/{mountProgressByTrack[track].totalSteps} known
+                      </p>
                     </button>
                   ))}
                 </div>
@@ -806,14 +980,12 @@ function App() {
                         Next lesson: {currentLessonDefinition?.title ?? "Trail Lesson"} ({(currentLessonCursor % trailLessonCount) + 1}/{trailLessonCount})
                       </p>
                     </div>
+                    {dashboardMessage && <p className="mt-2 text-sm font-semibold text-emerald-800">{dashboardMessage}</p>}
                   </div>
 
                   <div className="grid w-full gap-2 sm:grid-cols-2 xl:w-auto xl:grid-cols-3">
                     <button type="button" onClick={startLesson} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
                       Start Lesson ({SESSION_TARGET_MINUTES} min)
-                    </button>
-                    <button type="button" onClick={() => startReviewQueue()} className="rounded-xl border border-slate-900 bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-100">
-                      Start Reviews ({overallStats.due})
                     </button>
                     <button type="button" onClick={() => setScreen("dictionary")} className="rounded-xl border border-cyan-700 bg-cyan-50 px-4 py-2 text-sm font-semibold text-cyan-900 transition hover:bg-cyan-100">
                       {activeTrack === "kanji" ? "Dictionary" : "Reference Chart"}
@@ -844,21 +1016,16 @@ function App() {
                   ))}
                 </div>
 
-                <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                <div className="mt-3">
                   <article className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-                    <h3 className="text-sm font-semibold text-slate-900">Study Snapshot</h3>
-                    <div className="mt-2 grid grid-cols-2 gap-2">
-                      <div className="rounded-xl bg-slate-50 p-2.5">
-                        <p className="text-xs uppercase tracking-wide text-slate-500">Attempts</p>
-                        <p className="mt-1 text-lg font-bold text-slate-900">{recentAttempts.length}</p>
-                      </div>
-                      <div className="rounded-xl bg-slate-50 p-2.5">
-                        <p className="text-xs uppercase tracking-wide text-slate-500">Mastered</p>
-                        <p className="mt-1 text-lg font-bold text-slate-900">{overallStats.mastered}</p>
-                      </div>
+                    <h3 className="text-sm font-semibold text-slate-900">Current Climb</h3>
+                    <div className="mt-3">
+                      <MountProgressCard progress={activeMountProgress} active reducedMotion={settings.reducedMotion} />
                     </div>
                   </article>
+                </div>
 
+                <div className="mt-3 grid gap-3 lg:grid-cols-2">
                   <article className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
                     <h3 className="text-sm font-semibold text-slate-900">Recent Attempts</h3>
                     {recentAttempts.length === 0 && <p className="mt-1 text-sm text-slate-600">No attempts yet.</p>}
@@ -875,6 +1042,16 @@ function App() {
                         })}
                       </ul>
                     )}
+                  </article>
+
+                  <article className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                    <h3 className="text-sm font-semibold text-slate-900">Mount Rule</h3>
+                    <p className="mt-2 text-sm text-slate-700">
+                      A symbol becomes known after {KNOWN_CORRECT_THRESHOLD} cumulative correct answers. Misses still count as misses, but they never erase earlier progress.
+                    </p>
+                    <p className="mt-2 text-sm text-slate-700">
+                      Known symbols leave future quizzes, and every newly known symbol moves you one step closer to the summit.
+                    </p>
                   </article>
                 </div>
               </div>
@@ -925,12 +1102,19 @@ function App() {
 
         {screen === "quiz" && currentQuestion && (
           <section className="rounded-3xl border border-white/70 bg-white/85 p-4 shadow-lg backdrop-blur">
-            <p className="text-sm font-semibold uppercase tracking-wide text-emerald-700">
-              Quiz {quizIndex + 1} of {quizQuestions.length}
-            </p>
-            <h2 className="mt-3 text-2xl font-bold text-slate-900">
-              {currentTrackConfig.promptLabel} "{currentQuestion.promptLabel}"?
-            </h2>
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-wide text-emerald-700">
+                  Quiz {quizIndex + 1} of {quizQuestions.length}
+                </p>
+                <h2 className="mt-3 text-2xl font-bold text-slate-900">
+                  {currentTrackConfig.promptLabel} "{currentQuestion.promptLabel}"?
+                </h2>
+              </div>
+              <div className="w-full max-w-md">
+                <MountProgressCard progress={activeMountProgress} active reducedMotion={settings.reducedMotion} />
+              </div>
+            </div>
 
             <div className="mt-3 grid grid-cols-2 gap-2">
               {currentQuestion.options.map((option) => (
@@ -946,9 +1130,16 @@ function App() {
             </div>
 
             {lastAnswerCorrect !== null && (
-              <p className={`mt-4 text-sm font-semibold ${lastAnswerCorrect ? "text-emerald-700" : "text-rose-700"}`}>
-                {lastAnswerCorrect ? "Correct." : "Not this one. It will come back in review."}
-              </p>
+              <div className="mt-4 space-y-1">
+                <p className={`text-sm font-semibold ${lastAnswerCorrect ? "text-emerald-700" : "text-rose-700"}`}>
+                  {lastAnswerCorrect ? "Correct." : "Not this one. It will return in a later quiz."}
+                </p>
+                {knownEventItem?.id === currentQuestion.itemId && (
+                  <p className="text-sm font-semibold text-cyan-800">
+                    {knownEventItem.character} is now known. Your climber moved one step higher on {trackConfigs[activeTrack].label}.
+                  </p>
+                )}
+              </div>
             )}
           </section>
         )}
@@ -958,18 +1149,27 @@ function App() {
             <p className="text-sm font-semibold uppercase tracking-wide text-violet-700">Session Summary</p>
             <h2 className="mt-2 text-3xl font-bold text-slate-900">Trail Segment Complete</h2>
             <p className="mt-3 text-slate-700">
-              You answered {quizScore} out of {quizQuestions.length} correctly and updated each {currentTrackConfig.unitSingular}'s hit, miss, and review weight.
+              You answered {quizScore} out of {quizQuestions.length} correctly. Every correct answer moved a symbol closer to known, and every newly known symbol advanced the climb by one step.
             </p>
-            <p className="mt-1 text-sm text-slate-600">Wrong answers raise review weight. Correct answers lower it and build streaks.</p>
+            {sessionMissedItemIds.length > 0 && (
+              <p className="mt-2 text-sm text-slate-600">
+                {sessionMissedItemIds.length} missed {sessionMissedItemIds.length === 1 ? "symbol" : "symbols"} will return during later quizzes until they reach {KNOWN_CORRECT_THRESHOLD} correct answers.
+              </p>
+            )}
+            {knownEventItem && (
+              <p className="mt-2 text-sm font-semibold text-cyan-800">
+                Latest climb: {knownEventItem.character} reached known status on {knownEvent ? trackConfigs[knownEvent.track].label : currentTrackConfig.label}.
+              </p>
+            )}
 
             <div className="mt-3 grid gap-3 sm:grid-cols-3">
               <article className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <p className="text-sm uppercase tracking-wide text-slate-500">Mastered</p>
-                <p className="mt-2 text-3xl font-bold text-slate-900">{overallStats.mastered}</p>
+                <p className="text-sm uppercase tracking-wide text-slate-500">Known</p>
+                <p className="mt-2 text-3xl font-bold text-slate-900">{activeMountProgress.knownCount}</p>
               </article>
               <article className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <p className="text-sm uppercase tracking-wide text-slate-500">Reviews Due Now</p>
-                <p className="mt-2 text-3xl font-bold text-slate-900">{overallStats.due}</p>
+                <p className="text-sm uppercase tracking-wide text-slate-500">Remaining</p>
+                <p className="mt-2 text-3xl font-bold text-slate-900">{activeMountProgress.remainingCount}</p>
               </article>
               <article className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                 <p className="text-sm uppercase tracking-wide text-slate-500">Overall Accuracy</p>
@@ -977,14 +1177,16 @@ function App() {
               </article>
             </div>
 
+            <div className="mt-4">
+              <MountProgressCard progress={activeMountProgress} active reducedMotion={settings.reducedMotion} />
+            </div>
+
             <div className="mt-4 flex flex-wrap gap-3">
-              {sessionMissedItemIds.length > 0 && (
-                <button type="button" onClick={() => startReviewQueue(sessionMissedItemIds)} className="rounded-full bg-amber-700 px-5 py-2 text-sm font-semibold text-white transition hover:bg-amber-600">
-                  Review Missed ({sessionMissedItemIds.length})
-                </button>
-              )}
               <button type="button" onClick={returnToDashboard} className="rounded-full bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
                 Back To Base Camp
+              </button>
+              <button type="button" onClick={() => setScreen("progress")} className="rounded-full bg-emerald-700 px-5 py-2 text-sm font-semibold text-white transition hover:bg-emerald-600">
+                View Progress
               </button>
               <button type="button" onClick={startLesson} className="rounded-full bg-cyan-700 px-5 py-2 text-sm font-semibold text-white transition hover:bg-cyan-600">
                 Climb Another Segment
@@ -1041,51 +1243,6 @@ function App() {
                 </article>
               ))}
             </div>
-          </section>
-        )}
-
-        {screen === "review" && (
-          <section className="rounded-3xl border border-white/70 bg-white/85 p-4 shadow-lg backdrop-blur">
-            <p className="text-sm font-semibold uppercase tracking-wide text-amber-700">Review Queue</p>
-            <h2 className="mt-2 text-3xl font-bold text-slate-900">Trouble Spot Review</h2>
-
-            {!currentReviewItem && (
-              <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
-                <p className="text-lg font-semibold text-emerald-900">Queue complete.</p>
-                <p className="mt-2 text-emerald-800">You finished {reviewDoneCount} review cards in this session.</p>
-                <button type="button" onClick={returnToDashboard} className="mt-4 rounded-full bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
-                  Back To Base Camp
-                </button>
-              </div>
-            )}
-
-            {currentReviewItem && (
-              <div className="mt-3">
-                <div className="rounded-2xl border border-amber-100 bg-white p-4 text-center">
-                  <p className="text-7xl font-bold text-slate-900">{currentReviewItem.character}</p>
-                  <p className="mt-3 text-xl font-semibold text-slate-800">{currentReviewItem.primaryMeaning}</p>
-                  {activeTrack === "kanji" && settings.showFurigana && (
-                    <p className="mt-2 text-xs text-slate-500">
-                      Kun: {formatReadings(currentReviewItem.kunyomi, settings.showRomaji)} | On: {formatReadings(currentReviewItem.onyomi, settings.showRomaji)}
-                    </p>
-                  )}
-                  {isKanaTrack && <p className="mt-2 text-xs text-slate-500">Sound: {currentReviewItem.romaji}</p>}
-                  <p className="mt-2 text-sm text-slate-600">Mark whether you got it or missed it. Misses raise review weight so this item comes back sooner.</p>
-                </div>
-
-                <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                  <button type="button" onClick={() => applyReviewResult(false)} className="rounded-xl bg-rose-600 px-4 py-3 text-sm font-semibold text-white hover:bg-rose-500">
-                    Missed It
-                  </button>
-                  <button type="button" onClick={() => applyReviewResult(true)} className="rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-500">
-                    Got It
-                  </button>
-                </div>
-
-                <p className="mt-3 text-sm text-slate-700">Remaining cards: {reviewQueue.length}</p>
-                {reviewFeedback && <p className="mt-2 text-sm font-semibold text-slate-700">{reviewFeedback}</p>}
-              </div>
-            )}
           </section>
         )}
 
@@ -1229,9 +1386,11 @@ function App() {
                     {selectedDictionaryProgress && (
                       <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
                         <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Study Status</p>
-                        <p className="mt-1 text-sm font-semibold text-slate-900">{selectedDictionaryProgress.status}</p>
-                        <p className="text-xs text-slate-600">Current streak: {selectedDictionaryProgress.currentStreak}, Best streak: {selectedDictionaryProgress.bestStreak}</p>
-                        <p className="text-xs text-slate-600">Review weight: {selectedDictionaryProgress.reviewWeight}, Accuracy: {accuracyPercent(selectedDictionaryProgress)}%</p>
+                        <p className="mt-1 text-sm font-semibold capitalize text-slate-900">{selectedDictionaryProgress.status}</p>
+                        <p className="text-xs text-slate-600">
+                          Correct answers: {selectedDictionaryProgress.correctCount}/{KNOWN_CORRECT_THRESHOLD}
+                        </p>
+                        <p className="text-xs text-slate-600">Accuracy: {accuracyPercent(selectedDictionaryProgress)}%</p>
                         <button
                           type="button"
                           onClick={() => setItemExcluded(selectedDictionaryItem.id, !selectedDictionaryProgress.excludedFromLessons)}
@@ -1257,14 +1416,26 @@ function App() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <p className="text-sm font-semibold uppercase tracking-wide text-emerald-700">Progress</p>
-                <h2 className="mt-1 text-3xl font-bold text-slate-900">Trail Performance</h2>
+                <h2 className="mt-1 text-3xl font-bold text-slate-900">All Three Mounts</h2>
               </div>
               <button type="button" onClick={returnToDashboard} className="rounded-full bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
                 Back To Base Camp
               </button>
             </div>
 
-            <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="mt-4 grid gap-3 xl:grid-cols-3">
+              {(["kanji", "hiragana", "katakana"] as StudyTrack[]).map((track) => (
+                <MountProgressCard
+                  key={track}
+                  progress={mountProgressByTrack[track]}
+                  active={track === activeTrack}
+                  reducedMotion={settings.reducedMotion}
+                  onSelect={() => setActiveTrack(track)}
+                />
+              ))}
+            </div>
+
+            <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
               <article className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
                 <p className="text-xs uppercase tracking-wide text-emerald-700">Current Streak</p>
                 <p className="mt-2 text-3xl font-bold text-emerald-950">{overallStats.currentStreak}</p>
@@ -1275,7 +1446,7 @@ function App() {
               </article>
               <article className="rounded-2xl border border-violet-200 bg-violet-50 p-4">
                 <p className="text-xs uppercase tracking-wide text-violet-700">Total Attempts</p>
-                <p className="mt-2 text-3xl font-bold text-violet-950">{recentAttempts.length}</p>
+                <p className="mt-2 text-3xl font-bold text-violet-950">{overallStats.attempts}</p>
               </article>
               <article className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
                 <p className="text-xs uppercase tracking-wide text-amber-700">Overall Accuracy</p>

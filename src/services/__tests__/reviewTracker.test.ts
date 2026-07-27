@@ -10,9 +10,6 @@ function progressSeed(overrides: Partial<UserStudyProgress> = {}): UserStudyProg
     status: "new",
     correctCount: 0,
     incorrectCount: 0,
-    currentStreak: 0,
-    bestStreak: 0,
-    reviewWeight: 0,
     excludedFromLessons: false,
     lastAnsweredCorrect: null,
     lastReviewedAt: null,
@@ -23,34 +20,31 @@ function progressSeed(overrides: Partial<UserStudyProgress> = {}): UserStudyProg
 describe("ReviewTracker", () => {
   const tracker = new ReviewTracker();
 
-  it("increases review weight and resets streak on a miss", () => {
-    const updated = tracker.applyResult(progressSeed({ currentStreak: 3 }), false, new Date("2026-07-25T00:00:00.000Z"));
+  it("records a miss without erasing prior correct answers", () => {
+    const updated = tracker.applyResult(progressSeed({ correctCount: 3 }), false, new Date("2026-07-25T00:00:00.000Z"));
 
     expect(updated.incorrectCount).toBe(1);
-    expect(updated.currentStreak).toBe(0);
-    expect(updated.reviewWeight).toBe(3);
+    expect(updated.correctCount).toBe(3);
     expect(updated.status).toBe("learning");
   });
 
-  it("reduces review weight after a correct answer", () => {
+  it("marks an item known on the fifth correct answer", () => {
     const updated = tracker.applyResult(
-      progressSeed({ correctCount: 2, currentStreak: 2, bestStreak: 2, reviewWeight: 4 }),
+      progressSeed({ correctCount: 4, incorrectCount: 2, status: "learning" }),
       true,
       new Date("2026-07-25T00:00:00.000Z"),
     );
 
-    expect(updated.correctCount).toBe(3);
-    expect(updated.currentStreak).toBe(3);
-    expect(updated.bestStreak).toBe(3);
-    expect(updated.reviewWeight).toBe(3);
-    expect(updated.status).toBe("familiar");
+    expect(updated.correctCount).toBe(5);
+    expect(updated.status).toBe("known");
   });
 
-  it("sorts review queue by weight and ignores excluded kanji", () => {
+  it("queues non-known items first by lower correct count and ignores excluded items", () => {
     const queue = tracker.getQueue([
-      progressSeed({ itemId: "a", reviewWeight: 1 }),
-      progressSeed({ itemId: "b", reviewWeight: 5 }),
-      progressSeed({ itemId: "c", reviewWeight: 8, excludedFromLessons: true }),
+      progressSeed({ itemId: "a", correctCount: 2, incorrectCount: 1, status: "learning" }),
+      progressSeed({ itemId: "b", correctCount: 0, incorrectCount: 3, status: "learning" }),
+      progressSeed({ itemId: "c", correctCount: 5, status: "known" }),
+      progressSeed({ itemId: "d", correctCount: 1, excludedFromLessons: true, status: "learning" }),
     ]);
 
     expect(queue.map((item) => item.itemId)).toEqual(["b", "a"]);

@@ -7,8 +7,8 @@ export interface ProgressRepository {
   saveQuizAttempts(attempts: QuizAttempt[]): Promise<void>;
 }
 
-const STORAGE_KEY = "mount-kanji-progress";
-const QUIZ_ATTEMPTS_STORAGE_KEY = "mount-kanji-quiz-attempts";
+const STORAGE_KEY = "mount-kanji-progress-v3";
+const QUIZ_ATTEMPTS_STORAGE_KEY = "mount-kanji-quiz-attempts-v3";
 
 function isQuizAttempt(value: unknown): value is QuizAttempt {
   if (!value || typeof value !== "object") {
@@ -19,7 +19,7 @@ function isQuizAttempt(value: unknown): value is QuizAttempt {
   return (
     typeof candidate.id === "string" &&
     typeof candidate.questionType === "string" &&
-    (typeof candidate.itemId === "string" || typeof (candidate as { kanjiId?: string }).kanjiId === "string") &&
+    typeof candidate.itemId === "string" &&
     typeof candidate.correct === "boolean" &&
     typeof candidate.answeredAt === "string"
   );
@@ -53,14 +53,7 @@ export class LocalStorageProgressRepository implements ProgressRepository {
 
     try {
       const parsed = JSON.parse(serialized) as unknown;
-      return Array.isArray(parsed)
-        ? parsed
-            .filter(isQuizAttempt)
-            .map((attempt) => ({
-              ...attempt,
-              itemId: attempt.itemId ?? (attempt as { kanjiId?: string }).kanjiId ?? "",
-            }))
-        : [];
+      return Array.isArray(parsed) ? parsed.filter(isQuizAttempt) : [];
     } catch {
       window.localStorage.removeItem(QUIZ_ATTEMPTS_STORAGE_KEY);
       return [];

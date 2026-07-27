@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Mount Kanji learning trail</title>
+  <desc id="desc">A stylized Mount Fuji with a winding trail leading to a gold summit marker.</desc>
+
+  <defs>
+    <clipPath id="badge">
+      <circle cx="256" cy="256" r="244"/>
+    </clipPath>
+
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b9dcf4"/>
+      <stop offset="1" stop-color="#e7f4fb"/>
+    </linearGradient>
+
+    <linearGradient id="mountain" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#315f91"/>
+      <stop offset="1" stop-color="#173c68"/>
+    </linearGradient>
+
+    <linearGradient id="foreground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#214d7b"/>
+      <stop offset="1" stop-color="#12345c"/>
+    </linearGradient>
+
+    <linearGradient id="trail" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#f6d6a7"/>
+      <stop offset="1" stop-color="#efbd78"/>
+    </linearGradient>
+
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffd34d"/>
+      <stop offset="1" stop-color="#e89a00"/>
+    </linearGradient>
+  </defs>
+
+  <g clip-path="url(#badge)">
+    <rect width="512" height="512" fill="url(#sky)"/>
+
+    <!-- Main Mount Fuji silhouette -->
+    <path d="M-18 380 L172 222 L235 132 Q256 104 277 132 L342 222 L530 382 L530 530 L-18 530 Z"
+          fill="url(#mountain)"/>
+
+    <!-- Mountain facets -->
+    <path d="M172 222 L235 132 L210 275 L78 404 Z" fill="#3f6f9f" opacity=".75"/>
+    <path d="M277 132 L342 222 L440 405 L286 273 Z" fill="#244f7f" opacity=".8"/>
+    <path d="M210 275 L256 175 L286 273 L256 382 Z" fill="#2b5888" opacity=".8"/>
+
+    <!-- Snow cap -->
+    <path d="M172 222
+             L235 132
+             Q256 104 277 132
+             L342 222
+             L312 205
+             L325 243
+             L286 207
+             L292 262
+             L256 211
+             L225 260
+             L230 207
+             L191 244
+             L202 205 Z"
+          fill="#ffffff"/>
+
+    <!-- Foreground foothills -->
+    <path d="M-20 398
+             Q72 350 132 380
+             Q184 408 226 367
+             Q267 326 316 358
+             Q369 393 410 371
+             Q454 348 532 404
+             L532 532 L-20 532 Z"
+          fill="url(#foreground)"/>
+
+    <!-- Winding learning trail -->
+    <path d="M238 520
+             C208 474 333 446 305 401
+             C282 364 216 373 217 332
+             C218 294 307 292 297 248
+             C290 217 247 215 246 184
+             C245 163 261 151 257 137"
+          fill="none"
+          stroke="url(#trail)"
+          stroke-width="28"
+          stroke-linecap="round"
+          stroke-linejoin="round"/>
+
+    <!-- Summit goal -->
+    <circle cx="257" cy="126" r="13" fill="url(#gold)"/>
+  </g>
+
+  <circle cx="256" cy="256" r="244" fill="none" stroke="#ffffff" stroke-width="8"/>
+</svg>
