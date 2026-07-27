@@ -46,6 +46,7 @@ type SumoCategoryFilter = "all" | SumoTerm["category"];
 interface AppSettings {
   showFurigana: boolean;
   showRomaji: boolean;
+  includeKnownInLessons: boolean;
   reducedMotion: boolean;
   textScale: TextScale;
 }
@@ -69,6 +70,7 @@ const TRAIL_POINTS: Array<{ x: number; y: number }> = [
 const DEFAULT_SETTINGS: AppSettings = {
   showFurigana: true,
   showRomaji: false,
+  includeKnownInLessons: false,
   reducedMotion: false,
   textScale: 100,
 };
@@ -80,6 +82,7 @@ const DEFAULT_LESSON_CURSORS: LessonCursorState = {
 };
 
 const reviewTracker = new ReviewTracker();
+const STUDY_TRACK_ORDER: StudyTrack[] = ["hiragana", "katakana", "kanji"];
 
 const mountainImages: Record<StudyTrack, string> = {
   kanji: mountainStatusKanji,
@@ -466,7 +469,7 @@ function MountProgressCard({
 
 function App() {
   const [screen, setScreen] = useState<Screen>("dashboard");
-  const [activeTrack, setActiveTrack] = useState<StudyTrack>("kanji");
+  const [activeTrack, setActiveTrack] = useState<StudyTrack>("hiragana");
   const [lessonIndex, setLessonIndex] = useState(0);
   const [quizIndex, setQuizIndex] = useState(0);
   const [quizScore, setQuizScore] = useState(0);
@@ -493,12 +496,12 @@ function App() {
   const [dictionarySumoOnly, setDictionarySumoOnly] = useState(false);
   const [sumoQuery, setSumoQuery] = useState("");
   const [sumoCategory, setSumoCategory] = useState<SumoCategoryFilter>("all");
-  const [selectedItemId, setSelectedItemId] = useState<string>(trackConfigs.kanji.pool[0]?.id ?? "");
+  const [selectedItemId, setSelectedItemId] = useState<string>(trackConfigs.hiragana.pool[0]?.id ?? "");
   const [activeLessonItems, setActiveLessonItems] = useState<StudyItem[]>(() => {
-    const firstLesson = trackConfigs.kanji.lessons[0];
+    const firstLesson = trackConfigs.hiragana.lessons[0];
     return firstLesson ? firstLesson.itemIds.map((id) => itemById.get(id)).filter(Boolean) as StudyItem[] : [];
   });
-  const [activeLessonTitle, setActiveLessonTitle] = useState<string>(trackConfigs.kanji.lessons[0]?.title ?? "Trail Lesson");
+  const [activeLessonTitle, setActiveLessonTitle] = useState<string>(trackConfigs.hiragana.lessons[0]?.title ?? "Trail Lesson");
   const [quizQuestions, setQuizQuestions] = useState<QuizQuestion[]>([]);
   const [progressRepository, setProgressRepository] = useState<ProgressRepository | null>(null);
   const [isProgressHydrated, setIsProgressHydrated] = useState(false);
@@ -604,6 +607,11 @@ function App() {
   const currentPendingItems = useMemo(
     () => currentTrailItems.filter((item) => (progressByItem[item.id]?.status ?? "new") !== "known"),
     [currentTrailItems, progressByItem],
+  );
+
+  const currentLessonEligibleItems = useMemo(
+    () => (settings.includeKnownInLessons ? currentTrailItems : currentPendingItems),
+    [currentPendingItems, currentTrailItems, settings.includeKnownInLessons],
   );
 
   const trailLessonCount = Math.max(1, currentLessons.length);
@@ -732,7 +740,7 @@ function App() {
   }, [sumoCategory, sumoQuery]);
 
   function buildLessonSegment(lesson: SeedLesson | undefined): StudyItem[] {
-    if (currentPendingItems.length === 0) {
+    if (currentLessonEligibleItems.length === 0) {
       return [];
     }
 
@@ -741,7 +749,7 @@ function App() {
         .map((itemId) => itemById.get(itemId))
         .filter((item): item is StudyItem => Boolean(item))
         .filter((item) => !(progressByItem[item.id]?.excludedFromLessons ?? false))
-        .filter((item) => (progressByItem[item.id]?.status ?? "new") !== "known") ?? [];
+        .filter((item) => settings.includeKnownInLessons || (progressByItem[item.id]?.status ?? "new") !== "known") ?? [];
 
     const revisitRows = reviewTracker
       .getQueue(
@@ -769,7 +777,7 @@ function App() {
     }
 
     if (picked.length === 0) {
-      return currentPendingItems.slice(0, Math.min(5, currentPendingItems.length));
+      return currentLessonEligibleItems.slice(0, Math.min(5, currentLessonEligibleItems.length));
     }
 
     return picked;
@@ -788,7 +796,7 @@ function App() {
   }
 
   function startLesson() {
-    if (currentPendingItems.length === 0) {
+    if (currentLessonEligibleItems.length === 0) {
       setDashboardMessage(`${currentTrackConfig.label} is at the summit. Every symbol on this mount is known.`);
       setScreen("dashboard");
       return;
@@ -815,7 +823,7 @@ function App() {
     setSessionMissedItemIds([]);
     setLastAnswerCorrect(null);
     setKnownEvent(null);
-    setQuizQuestions(buildQuizQuestions(lessonSegment, currentPendingItems));
+    setQuizQuestions(buildQuizQuestions(lessonSegment, currentLessonEligibleItems));
   }
 
   function submitAnswer(option: string) {
@@ -950,7 +958,7 @@ function App() {
               <article className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
                 <h2 className="text-sm font-semibold text-slate-900">Climbs</h2>
                 <div className="mt-3 space-y-2">
-                  {(["kanji", "hiragana", "katakana"] as StudyTrack[]).map((track) => (
+                  {STUDY_TRACK_ORDER.map((track) => (
                     <button
                       key={track}
                       type="button"
@@ -1424,7 +1432,7 @@ function App() {
             </div>
 
             <div className="mt-4 grid gap-3 xl:grid-cols-3">
-              {(["kanji", "hiragana", "katakana"] as StudyTrack[]).map((track) => (
+              {STUDY_TRACK_ORDER.map((track) => (
                 <MountProgressCard
                   key={track}
                   progress={mountProgressByTrack[track]}
@@ -1508,15 +1516,51 @@ function App() {
                 <div className="mt-3 space-y-2">
                   <label className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
                     <span className="text-sm font-medium text-slate-800">Show Furigana Readings</span>
-                    <input type="checkbox" checked={settings.showFurigana} onChange={(event) => setSettings((previous) => ({ ...previous, showFurigana: event.currentTarget.checked }))} className="h-5 w-5 accent-violet-700" />
+                    <input
+                      type="checkbox"
+                      checked={settings.showFurigana}
+                      onChange={(event) => {
+                        const checked = event.currentTarget.checked;
+                        setSettings((previous) => ({ ...previous, showFurigana: checked }));
+                      }}
+                      className="h-5 w-5 accent-violet-700"
+                    />
                   </label>
 
                   <label className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
                     <span className="text-sm font-medium text-slate-800">Show Romaji</span>
-                    <input type="checkbox" checked={settings.showRomaji} onChange={(event) => setSettings((previous) => ({ ...previous, showRomaji: event.currentTarget.checked }))} disabled={!settings.showFurigana} className="h-5 w-5 accent-violet-700 disabled:opacity-50" />
+                    <input
+                      type="checkbox"
+                      checked={settings.showRomaji}
+                      onChange={(event) => {
+                        const checked = event.currentTarget.checked;
+                        setSettings((previous) => ({ ...previous, showRomaji: checked }));
+                      }}
+                      disabled={!settings.showFurigana}
+                      className="h-5 w-5 accent-violet-700 disabled:opacity-50"
+                    />
                   </label>
 
                   {!settings.showFurigana && <p className="text-xs text-slate-500">Enable furigana first to show romaji.</p>}
+                </div>
+              </article>
+
+              <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <h3 className="text-lg font-semibold text-slate-900">Lesson Content</h3>
+                <div className="mt-3 space-y-2">
+                  <label className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                    <span className="text-sm font-medium text-slate-800">Include Known Symbols In Lessons</span>
+                    <input
+                      type="checkbox"
+                      checked={settings.includeKnownInLessons}
+                      onChange={(event) => {
+                        const checked = event.currentTarget.checked;
+                        setSettings((previous) => ({ ...previous, includeKnownInLessons: checked }));
+                      }}
+                      className="h-5 w-5 accent-violet-700"
+                    />
+                  </label>
+                  <p className="text-xs text-slate-500">Applies to Mount Hiragana, Mount Katakana, and Mount Kanji.</p>
                 </div>
               </article>
 
@@ -1525,14 +1569,25 @@ function App() {
                 <div className="mt-3 space-y-2">
                   <label className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
                     <span className="text-sm font-medium text-slate-800">Reduced Motion</span>
-                    <input type="checkbox" checked={settings.reducedMotion} onChange={(event) => setSettings((previous) => ({ ...previous, reducedMotion: event.currentTarget.checked }))} className="h-5 w-5 accent-violet-700" />
+                    <input
+                      type="checkbox"
+                      checked={settings.reducedMotion}
+                      onChange={(event) => {
+                        const checked = event.currentTarget.checked;
+                        setSettings((previous) => ({ ...previous, reducedMotion: checked }));
+                      }}
+                      className="h-5 w-5 accent-violet-700"
+                    />
                   </label>
 
                   <label className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
                     <span className="text-sm font-medium text-slate-800">Text Size</span>
                     <select
                       value={settings.textScale}
-                      onChange={(event) => setSettings((previous) => ({ ...previous, textScale: Number(event.currentTarget.value) as TextScale }))}
+                      onChange={(event) => {
+                        const textScale = Number(event.currentTarget.value) as TextScale;
+                        setSettings((previous) => ({ ...previous, textScale }));
+                      }}
                       className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-sm"
                     >
                       <option value={90}>Compact</option>
