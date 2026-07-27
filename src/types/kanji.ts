@@ -1,4 +1,4 @@
-export type StudyTrack = "kanji" | "hiragana";
+export type StudyTrack = "kanji" | "hiragana" | "katakana";
 
 export interface StudyItem {
   id: string;

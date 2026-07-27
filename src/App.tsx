@@ -4,6 +4,8 @@ import { toRomaji } from "wanakana";
 import { beginnerKanjiPool } from "./data/seed/beginnerSet";
 import { hiraganaLessons } from "./data/seed/hiraganaLessonCatalog";
 import { hiraganaPool } from "./data/seed/hiraganaSet";
+import { katakanaLessons } from "./data/seed/katakanaLessonCatalog";
+import { katakanaPool } from "./data/seed/katakanaSet";
 import { seedLessons, type SeedLesson } from "./data/seed/lessonCatalog";
 import { sumoTerms, type SumoTerm } from "./data/seed/sumoTerms";
 import { createProgressRepository } from "./repositories/progressRepositoryFactory";
@@ -56,6 +58,7 @@ const DEFAULT_SETTINGS: AppSettings = {
 const DEFAULT_LESSON_CURSORS: LessonCursorState = {
   kanji: 0,
   hiragana: 0,
+  katakana: 0,
 };
 
 const reviewTracker = new ReviewTracker();
@@ -108,9 +111,24 @@ const trackConfigs: Record<
     lessons: hiraganaLessons,
     pool: hiraganaPool,
   },
+  katakana: {
+    label: "Mount Katakana",
+    dashboardTitle: "Katakana Base Camp",
+    dashboardSubtitle: "Sound-first recognition for loanwords and names",
+    trailName: "Katakana Trail",
+    introFocus: "Angular kana mapping",
+    unitSingular: "character",
+    unitPlural: "characters",
+    itemLabel: "sound",
+    promptLabel: "Which katakana sounds like",
+    dictionaryTitle: "Katakana Reference Chart",
+    focusFieldLabel: "Sound",
+    lessons: katakanaLessons,
+    pool: katakanaPool,
+  },
 };
 
-const allItems = [...beginnerKanjiPool, ...hiraganaPool];
+const allItems = [...beginnerKanjiPool, ...hiraganaPool, ...katakanaPool];
 const itemById = new Map(allItems.map((item) => [item.id, item]));
 
 function shuffle<T>(items: T[]): T[] {
@@ -323,6 +341,7 @@ function App() {
       return {
         kanji: Number.isFinite(parsed.kanji) && (parsed.kanji ?? 0) >= 0 ? Math.floor(parsed.kanji ?? 0) : 0,
         hiragana: Number.isFinite(parsed.hiragana) && (parsed.hiragana ?? 0) >= 0 ? Math.floor(parsed.hiragana ?? 0) : 0,
+        katakana: Number.isFinite(parsed.katakana) && (parsed.katakana ?? 0) >= 0 ? Math.floor(parsed.katakana ?? 0) : 0,
       };
     } catch {
       return DEFAULT_LESSON_CURSORS;
@@ -332,6 +351,7 @@ function App() {
   const currentTrackConfig = trackConfigs[activeTrack];
   const currentPool = currentTrackConfig.pool;
   const currentLessons = currentTrackConfig.lessons;
+  const isKanaTrack = activeTrack === "hiragana" || activeTrack === "katakana";
 
   useEffect(() => {
     let isActive = true;
@@ -713,9 +733,9 @@ function App() {
       focus: activeTrack === "kanji" ? "Pattern clues" : "Voiced kana",
     },
     {
-      name: activeTrack === "kanji" ? "Sumo Trail" : "Katakana Trail",
-      progress: activeTrack === "kanji" ? "Content loading next" : "Mount Katakana planned next",
-      focus: activeTrack === "kanji" ? "Ranks and match terms" : "Loanword recognition",
+      name: activeTrack === "kanji" ? "Sumo Trail" : activeTrack === "hiragana" ? "Katakana Trail" : "Loanword Trail",
+      progress: activeTrack === "kanji" ? "Content loading next" : activeTrack === "hiragana" ? "Available now" : "Content loading next",
+      focus: activeTrack === "kanji" ? "Ranks and match terms" : activeTrack === "hiragana" ? "Angular kana recognition" : "Loanword recognition",
     },
   ];
 
@@ -759,7 +779,7 @@ function App() {
               <article className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
                 <h2 className="text-sm font-semibold text-slate-900">Climbs</h2>
                 <div className="mt-3 space-y-2">
-                  {(["kanji", "hiragana"] as StudyTrack[]).map((track) => (
+                  {(["kanji", "hiragana", "katakana"] as StudyTrack[]).map((track) => (
                     <button
                       key={track}
                       type="button"
@@ -774,10 +794,6 @@ function App() {
                       <p className="mt-1 text-xs text-slate-600">{trackConfigs[track].dashboardSubtitle}</p>
                     </button>
                   ))}
-                  <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3 py-3 text-left">
-                    <p className="text-sm font-semibold text-slate-700">Mount Katakana</p>
-                    <p className="mt-1 text-xs text-slate-500">Planned next phase</p>
-                  </div>
                 </div>
               </article>
 
@@ -882,7 +898,7 @@ function App() {
                   Kun: {formatReadings(currentLessonItem.kunyomi, settings.showRomaji)} | On: {formatReadings(currentLessonItem.onyomi, settings.showRomaji)}
                 </p>
               )}
-              {activeTrack === "hiragana" && (
+              {isKanaTrack && (
                 <p className="mt-3 text-sm text-slate-500">
                   Sound: <span className="font-semibold text-slate-800">{currentLessonItem.romaji}</span>
                   {settings.showRomaji && currentLessonItem.kunyomi[0] ? ` | Kana: ${currentLessonItem.kunyomi[0]}` : ""}
@@ -1053,7 +1069,7 @@ function App() {
                       Kun: {formatReadings(currentReviewItem.kunyomi, settings.showRomaji)} | On: {formatReadings(currentReviewItem.onyomi, settings.showRomaji)}
                     </p>
                   )}
-                  {activeTrack === "hiragana" && <p className="mt-2 text-xs text-slate-500">Sound: {currentReviewItem.romaji}</p>}
+                  {isKanaTrack && <p className="mt-2 text-xs text-slate-500">Sound: {currentReviewItem.romaji}</p>}
                   <p className="mt-2 text-sm text-slate-600">Mark whether you got it or missed it. Misses raise review weight so this item comes back sooner.</p>
                 </div>
 
@@ -1114,7 +1130,9 @@ function App() {
                 </>
               ) : (
                 <p className="flex items-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 md:col-span-2">
-                  Full basic hiragana chart. Dakuten and combinations come next.
+                  {activeTrack === "hiragana"
+                    ? "Full hiragana chart with voiced and contracted sounds."
+                    : "Full basic katakana chart. Dakuten and combinations come next."}
                 </p>
               )}
             </div>
@@ -1165,7 +1183,7 @@ function App() {
                           </div>
                         </>
                       )}
-                      {activeTrack === "hiragana" && (
+                      {isKanaTrack && (
                         <>
                           <div className="flex justify-between gap-3">
                             <dt className="text-slate-500">Romaji</dt>
