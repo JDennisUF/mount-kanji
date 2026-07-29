@@ -3,6 +3,7 @@ export type QuizType =
   | "kanji_recall"
   | "multiple_choice"
   | "matching"
+  | "concentration"
   | "similar_kanji"
   | "reading_quiz"
   | "sumo_quiz";

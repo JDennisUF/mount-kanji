@@ -18,7 +18,7 @@ import type { QuizAttempt, QuizType, StudyItem, StudyTrack, UserStudyProgress } 
 
 type Screen = "dashboard" | "lesson" | "quiz" | "summary" | "dictionary" | "progress" | "settings" | "sumo";
 
-type QuizMode = "multiple_choice" | "matching";
+type QuizMode = "multiple_choice" | "matching" | "concentration";
 
 interface MultipleChoiceQuestion {
   kind: "multiple_choice";
@@ -41,7 +41,21 @@ interface MatchingQuestion {
   promptLabel: string;
 }
 
-type QuizQuestion = MultipleChoiceQuestion | MatchingQuestion;
+interface ConcentrationCard {
+  cardId: string;
+  itemId: string;
+  label: string;
+  side: "symbol" | "definition";
+}
+
+interface ConcentrationQuestion {
+  kind: "concentration";
+  pairs: MatchingPair[];
+  cards: ConcentrationCard[];
+  promptLabel: string;
+}
+
+type QuizQuestion = MultipleChoiceQuestion | MatchingQuestion | ConcentrationQuestion;
 
 interface MountProgress {
   track: StudyTrack;
@@ -60,6 +74,11 @@ interface KnownEvent {
 
 interface MatchingFeedback {
   tone: "success" | "error" | "idle";
+  message: string;
+}
+
+interface ConcentrationFeedback {
+  tone: "success" | "idle";
   message: string;
 }
 
@@ -83,6 +102,8 @@ const LESSON_CURSOR_STORAGE_KEY = "mount-kanji-lesson-cursor-v2";
 const SETTINGS_STORAGE_KEY = "mount-kanji-settings";
 const REVISIT_INSERTS = 2;
 const MATCHING_BOARD_SIZE = 5;
+const CONCENTRATION_GRID_SIZE = 16;
+const CONCENTRATION_PAIR_COUNT = CONCENTRATION_GRID_SIZE / 2;
 const TRAIL_POINTS: Array<{ x: number; y: number }> = [
   { x: 38, y: 92 },
   { x: 52, y: 82 },
@@ -177,6 +198,34 @@ const trackConfigs: Record<
 
 const allItems = [...beginnerKanjiPool, ...hiraganaPool, ...katakanaPool];
 const itemById = new Map(allItems.map((item) => [item.id, item]));
+const KATAKANA_LOANWORD_GLOSSES: Record<string, string> = {
+  ア: "app",
+  イ: "image",
+  エ: "energy",
+  オ: "office",
+  カ: "camera",
+  キ: "key",
+  ク: "cookie",
+  ケ: "cake",
+  コ: "coffee",
+  サ: "salad",
+  シ: "shirt",
+  ス: "soup",
+  セ: "center",
+  ソ: "soccer",
+  タ: "taxi",
+  チ: "cheese",
+  テ: "tennis",
+  ト: "toast",
+  ハ: "hamburger",
+  フ: "football",
+  ホ: "hotel",
+  マ: "microphone",
+  メ: "menu",
+  ラ: "radio",
+  レ: "lemon",
+  ロ: "robot",
+};
 
 function shuffle<T>(items: T[]): T[] {
   const copy = [...items];
@@ -320,6 +369,26 @@ function buildMatchingDescription(item: StudyItem): string {
   return `${item.romaji ?? item.primaryMeaning} sound`;
 }
 
+function buildConcentrationDescription(item: StudyItem): string {
+  if (item.script === "kanji") {
+    return item.primaryMeaning;
+  }
+
+  if (item.script === "hiragana") {
+    return item.romaji ?? item.primaryMeaning;
+  }
+
+  return KATAKANA_LOANWORD_GLOSSES[item.character] ?? item.romaji ?? item.primaryMeaning;
+}
+
+function supportsConcentration(item: StudyItem): boolean {
+  if (item.script !== "katakana") {
+    return true;
+  }
+
+  return item.character in KATAKANA_LOANWORD_GLOSSES;
+}
+
 function buildMatchingQuestions(items: StudyItem[]): QuizQuestion[] {
   const labelCounts = items.reduce<Record<string, number>>((counts, item) => {
     const label = buildMatchingDescription(item);
@@ -349,9 +418,37 @@ function buildMatchingQuestions(items: StudyItem[]): QuizQuestion[] {
   ];
 }
 
+function buildConcentrationQuestions(items: StudyItem[]): QuizQuestion[] {
+  const pairs = items.map((item) => ({
+    itemId: item.id,
+    symbol: item.character,
+    description: buildConcentrationDescription(item),
+  }));
+
+  const cards = shuffle(
+    pairs.flatMap((pair) => [
+      { cardId: `${pair.itemId}_symbol`, itemId: pair.itemId, label: pair.symbol, side: "symbol" as const },
+      { cardId: `${pair.itemId}_definition`, itemId: pair.itemId, label: pair.description, side: "definition" as const },
+    ]),
+  );
+
+  return [
+    {
+      kind: "concentration",
+      pairs,
+      cards,
+      promptLabel: "Flip cards and match each pair.",
+    },
+  ];
+}
+
 function buildQuestionsForMode(items: StudyItem[], pool: StudyItem[], quizMode: QuizMode): QuizQuestion[] {
   if (quizMode === "matching") {
     return buildMatchingQuestions(items);
+  }
+
+  if (quizMode === "concentration") {
+    return buildConcentrationQuestions(items);
   }
 
   return buildQuizQuestions(items, pool);
@@ -498,9 +595,13 @@ function App() {
   const [quizScore, setQuizScore] = useState(0);
   const [lastAnswerCorrect, setLastAnswerCorrect] = useState<boolean | null>(null);
   const [matchingFeedback, setMatchingFeedback] = useState<MatchingFeedback>({ tone: "idle", message: "" });
+  const [concentrationFeedback, setConcentrationFeedback] = useState<ConcentrationFeedback>({ tone: "idle", message: "" });
   const [selectedMatchingItemId, setSelectedMatchingItemId] = useState<string | null>(null);
   const [matchedItemIds, setMatchedItemIds] = useState<string[]>([]);
   const [incorrectMatchItemIds, setIncorrectMatchItemIds] = useState<string[]>([]);
+  const [flippedCardIds, setFlippedCardIds] = useState<string[]>([]);
+  const [concentrationMatchedItemIds, setConcentrationMatchedItemIds] = useState<string[]>([]);
+  const [isResolvingConcentrationTurn, setIsResolvingConcentrationTurn] = useState(false);
   const [dashboardMessage, setDashboardMessage] = useState("");
   const [progressByItem, setProgressByItem] = useState<Record<string, UserStudyProgress>>({});
   const [quizAttempts, setQuizAttempts] = useState<QuizAttempt[]>([]);
@@ -558,6 +659,9 @@ function App() {
     () =>
       quizQuestions.reduce((sum, question) => {
         if (question.kind === "matching") {
+          return sum + question.pairs.length;
+        }
+        if (question.kind === "concentration") {
           return sum + question.pairs.length;
         }
         return sum + 1;
@@ -834,6 +938,23 @@ function App() {
     return [...uniqueItems, ...fallbackItems].slice(0, MATCHING_BOARD_SIZE);
   }
 
+  function buildConcentrationLessonSegment(items: StudyItem[]): StudyItem[] {
+    const concentrationEligibleTrailItems = currentTrailItems.filter(supportsConcentration);
+    const uniqueItems = items
+      .filter(supportsConcentration)
+      .filter((item, index, collection) => collection.findIndex((candidate) => candidate.id === item.id) === index);
+
+    if (uniqueItems.length >= CONCENTRATION_PAIR_COUNT) {
+      return uniqueItems.slice(0, CONCENTRATION_PAIR_COUNT);
+    }
+
+    const fallbackItems = shuffle(concentrationEligibleTrailItems)
+      .filter((item) => !uniqueItems.some((candidate) => candidate.id === item.id))
+      .slice(0, CONCENTRATION_PAIR_COUNT - uniqueItems.length);
+
+    return [...uniqueItems, ...fallbackItems].slice(0, CONCENTRATION_PAIR_COUNT);
+  }
+
   function switchTrack(track: StudyTrack) {
     setActiveTrack(track);
     setScreen("dashboard");
@@ -843,9 +964,13 @@ function App() {
     setDashboardMessage("");
     setLastAnswerCorrect(null);
     setMatchingFeedback({ tone: "idle", message: "" });
+    setConcentrationFeedback({ tone: "idle", message: "" });
     setSelectedMatchingItemId(null);
     setMatchedItemIds([]);
     setIncorrectMatchItemIds([]);
+    setFlippedCardIds([]);
+    setConcentrationMatchedItemIds([]);
+    setIsResolvingConcentrationTurn(false);
     setSessionMissedItemIds([]);
     setKnownEvent(null);
   }
@@ -865,10 +990,20 @@ function App() {
     }
 
     const preparedLessonSegment =
-      settings.quizMode === "matching" ? buildMatchingLessonSegment(lessonSegment) : lessonSegment;
+      settings.quizMode === "matching"
+        ? buildMatchingLessonSegment(lessonSegment)
+        : settings.quizMode === "concentration"
+          ? buildConcentrationLessonSegment(lessonSegment)
+          : lessonSegment;
 
     if (settings.quizMode === "matching" && preparedLessonSegment.length < MATCHING_BOARD_SIZE) {
       setDashboardMessage(`Matching mode needs ${MATCHING_BOARD_SIZE} available ${currentTrackConfig.unitPlural}.`);
+      setScreen("dashboard");
+      return;
+    }
+
+    if (settings.quizMode === "concentration" && preparedLessonSegment.length < CONCENTRATION_PAIR_COUNT) {
+      setDashboardMessage(`Concentration needs ${CONCENTRATION_PAIR_COUNT} available ${currentTrackConfig.unitPlural}.`);
       setScreen("dashboard");
       return;
     }
@@ -887,9 +1022,13 @@ function App() {
     setSessionMissedItemIds([]);
     setLastAnswerCorrect(null);
     setMatchingFeedback({ tone: "idle", message: "" });
+    setConcentrationFeedback({ tone: "idle", message: "" });
     setSelectedMatchingItemId(null);
     setMatchedItemIds([]);
     setIncorrectMatchItemIds([]);
+    setFlippedCardIds([]);
+    setConcentrationMatchedItemIds([]);
+    setIsResolvingConcentrationTurn(false);
     setKnownEvent(null);
     setQuizQuestions(buildQuestionsForMode(preparedLessonSegment, currentLessonEligibleItems, settings.quizMode));
   }
@@ -933,6 +1072,10 @@ function App() {
     setMatchedItemIds([]);
     setIncorrectMatchItemIds([]);
     setMatchingFeedback({ tone: "idle", message: "" });
+    setConcentrationFeedback({ tone: "idle", message: "" });
+    setFlippedCardIds([]);
+    setConcentrationMatchedItemIds([]);
+    setIsResolvingConcentrationTurn(false);
 
     if (quizIndex + 1 >= quizQuestions.length) {
       setScreen("summary");
@@ -1024,6 +1167,63 @@ function App() {
     }
   }
 
+  function handleConcentrationCardClick(cardId: string) {
+    if (!currentQuestion || currentQuestion.kind !== "concentration" || isResolvingConcentrationTurn) {
+      return;
+    }
+
+    const card = currentQuestion.cards.find((entry) => entry.cardId === cardId);
+    if (!card || concentrationMatchedItemIds.includes(card.itemId) || flippedCardIds.includes(cardId)) {
+      return;
+    }
+
+    const nextFlippedCardIds = [...flippedCardIds, cardId];
+    setFlippedCardIds(nextFlippedCardIds);
+
+    if (nextFlippedCardIds.length < 2) {
+      setConcentrationFeedback({ tone: "idle", message: "Find the matching card." });
+      return;
+    }
+
+    const [firstCardId, secondCardId] = nextFlippedCardIds;
+    const firstCard = currentQuestion.cards.find((entry) => entry.cardId === firstCardId);
+    const secondCard = currentQuestion.cards.find((entry) => entry.cardId === secondCardId);
+    if (!firstCard || !secondCard) {
+      setFlippedCardIds([]);
+      return;
+    }
+
+    const isMatch = firstCard.itemId === secondCard.itemId && firstCard.side !== secondCard.side;
+    setLastAnswerCorrect(isMatch);
+
+    if (isMatch) {
+      if (!concentrationMatchedItemIds.includes(firstCard.itemId)) {
+        const scored = recordQuizResult(firstCard.itemId, true, "concentration");
+        if (scored) {
+          setQuizScore((value) => value + 1);
+        }
+      }
+
+      const nextMatchedItemIds = [...concentrationMatchedItemIds, firstCard.itemId];
+      setConcentrationMatchedItemIds(nextMatchedItemIds);
+      setFlippedCardIds([]);
+      setConcentrationFeedback({ tone: "success", message: `${firstCard.label} matched ${secondCard.label}.` });
+      playFeedbackSound("success");
+
+      if (nextMatchedItemIds.length >= currentQuestion.pairs.length) {
+        setConcentrationFeedback({ tone: "success", message: "Board cleared. Continue to the next set." });
+      }
+      return;
+    }
+
+    setIsResolvingConcentrationTurn(true);
+    setConcentrationFeedback({ tone: "idle", message: "Not a pair. Try again." });
+    window.setTimeout(() => {
+      setFlippedCardIds([]);
+      setIsResolvingConcentrationTurn(false);
+    }, 700);
+  }
+
   function setItemExcluded(itemId: string, excludedFromLessons: boolean) {
     setProgressByItem((previous) => {
       const currentProgress = previous[itemId] ?? createDefaultProgress(itemId);
@@ -1060,9 +1260,13 @@ function App() {
     setQuizScore(0);
     setLastAnswerCorrect(null);
     setMatchingFeedback({ tone: "idle", message: "" });
+    setConcentrationFeedback({ tone: "idle", message: "" });
     setSelectedMatchingItemId(null);
     setMatchedItemIds([]);
     setIncorrectMatchItemIds([]);
+    setFlippedCardIds([]);
+    setConcentrationMatchedItemIds([]);
+    setIsResolvingConcentrationTurn(false);
   }
 
   const trails = [
@@ -1163,7 +1367,7 @@ function App() {
 
                   <div className="grid w-full gap-2 sm:grid-cols-2 xl:w-auto xl:grid-cols-3">
                     <button type="button" onClick={startLesson} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
-                      Start {settings.quizMode === "matching" ? "Match" : "Quiz"} Lesson ({SESSION_TARGET_MINUTES} min)
+                      Start {settings.quizMode === "matching" ? "Match" : settings.quizMode === "concentration" ? "Concentration" : "Quiz"} Lesson ({SESSION_TARGET_MINUTES} min)
                     </button>
                     <button type="button" onClick={() => setScreen("dictionary")} className="rounded-xl border border-cyan-700 bg-cyan-50 px-4 py-2 text-sm font-semibold text-cyan-900 transition hover:bg-cyan-100">
                       {activeTrack === "kanji" ? "Dictionary" : "Reference Chart"}
@@ -1283,11 +1487,15 @@ function App() {
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div>
                 <p className="text-sm font-semibold uppercase tracking-wide text-emerald-700">
-                  {currentQuestion.kind === "matching" ? "Match Board" : "Quiz"} {quizIndex + 1} of {quizQuestions.length}
+                  {currentQuestion.kind === "matching" ? "Match Board" : currentQuestion.kind === "concentration" ? "Concentration Board" : "Quiz"} {quizIndex + 1} of {quizQuestions.length}
                 </p>
                 {currentQuestion.kind === "multiple_choice" ? (
                   <h2 className="mt-3 text-2xl font-bold text-slate-900">
                     {currentTrackConfig.promptLabel} "{currentQuestion.promptLabel}"?
+                  </h2>
+                ) : currentQuestion.kind === "concentration" ? (
+                  <h2 className="mt-3 text-2xl font-bold text-slate-900">
+                    {currentQuestion.promptLabel}
                   </h2>
                 ) : (
                   <h2 className="mt-3 text-2xl font-bold text-slate-900">{currentQuestion.promptLabel}</h2>
@@ -1426,6 +1634,76 @@ function App() {
                   >
                     {quizIndex + 1 >= quizQuestions.length ? "Finish Trail" : "Next Board"}
                   </button>
+                </div>
+              </>
+            )}
+
+            {currentQuestion.kind === "concentration" && (
+              <>
+                <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_18rem]">
+                  <div className="mx-auto grid w-full max-w-3xl grid-cols-4 gap-2 sm:gap-3">
+                    {currentQuestion.cards.map((card) => {
+                      const isMatched = concentrationMatchedItemIds.includes(card.itemId);
+                      const isFaceUp = isMatched || flippedCardIds.includes(card.cardId);
+
+                      return (
+                        <button
+                          key={card.cardId}
+                          type="button"
+                          onClick={() => handleConcentrationCardClick(card.cardId)}
+                          disabled={isMatched || isResolvingConcentrationTurn}
+                          className={`aspect-[0.92] rounded-xl border px-2 py-2 text-center transition sm:px-3 sm:py-3 ${
+                            isMatched
+                              ? "border-emerald-300 bg-emerald-50 text-emerald-900"
+                              : isFaceUp
+                                ? "border-cyan-400 bg-cyan-50 text-cyan-950"
+                                : "border-slate-200 bg-slate-900 text-white hover:border-cyan-400 hover:bg-slate-800"
+                          } ${isFaceUp ? "" : "shadow-sm"}`}
+                        >
+                          <div className="flex h-full items-center justify-center">
+                            {isFaceUp ? (
+                              <span className={`font-semibold ${card.side === "symbol" ? "text-4xl sm:text-5xl" : "text-base leading-tight sm:text-lg"}`}>{card.label}</span>
+                            ) : (
+                              <span className="text-3xl sm:text-4xl">?</span>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <aside className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Board</p>
+                    <p className="mt-2 text-2xl font-bold text-slate-900">
+                      {concentrationMatchedItemIds.length} / {currentQuestion.pairs.length}
+                    </p>
+                    <p className="mt-1 text-sm text-slate-600">Pairs matched</p>
+
+                    <div className="mt-4 space-y-2">
+                      <p className={`text-sm font-semibold ${concentrationFeedback.tone === "success" ? "text-emerald-700" : "text-slate-700"}`}>
+                        {concentrationFeedback.message || "Flip two cards at a time and find the pairs."}
+                      </p>
+                      <p className="text-sm text-slate-600">Misses do not count against progress in this mode.</p>
+                      {knownEventItem && concentrationMatchedItemIds.includes(knownEventItem.id) && (
+                        <p className="text-sm font-semibold text-cyan-800">
+                          {knownEventItem.character} is now known. Your climber moved one step higher on {trackConfigs[activeTrack].label}.
+                        </p>
+                      )}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={advanceQuiz}
+                      disabled={concentrationMatchedItemIds.length < currentQuestion.pairs.length}
+                      className={`mt-4 w-full rounded-full px-5 py-2 text-sm font-semibold transition ${
+                        concentrationMatchedItemIds.length < currentQuestion.pairs.length
+                          ? "cursor-not-allowed border border-slate-300 bg-slate-100 text-slate-400"
+                          : "bg-cyan-700 text-white hover:bg-cyan-600"
+                      }`}
+                    >
+                      {quizIndex + 1 >= quizQuestions.length ? "Finish Trail" : "Next Board"}
+                    </button>
+                  </aside>
                 </div>
               </>
             )}
@@ -1871,6 +2149,7 @@ function App() {
                     >
                       <option value="multiple_choice">Multiple Choice</option>
                       <option value="matching">Match 5 Pairs</option>
+                      <option value="concentration">Concentration 4x4</option>
                     </select>
                   </label>
 
@@ -1886,7 +2165,7 @@ function App() {
                       className="h-5 w-5 accent-violet-700"
                     />
                   </label>
-                  <p className="text-xs text-slate-500">Matching supports tap-to-pair on touch devices and drag and drop on desktop.</p>
+                  <p className="text-xs text-slate-500">Matching supports tap-to-pair on touch devices and drag and drop on desktop. Concentration uses a 4x4 board and only credits successful pairs.</p>
                 </div>
               </article>
 
