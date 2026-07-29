@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toRomaji } from "wanakana";
 
 import mountainStatusKanji from "./assets/mount-kanji.svg";
@@ -14,16 +14,34 @@ import { sumoTerms, type SumoTerm } from "./data/seed/sumoTerms";
 import { createProgressRepository } from "./repositories/progressRepositoryFactory";
 import type { ProgressRepository } from "./repositories/progressRepository";
 import { KNOWN_CORRECT_THRESHOLD, ReviewTracker, resolveStudyStatus } from "./services/reviewTracker";
-import type { QuizAttempt, StudyItem, StudyTrack, UserStudyProgress } from "./types";
+import type { QuizAttempt, QuizType, StudyItem, StudyTrack, UserStudyProgress } from "./types";
 
 type Screen = "dashboard" | "lesson" | "quiz" | "summary" | "dictionary" | "progress" | "settings" | "sumo";
 
-interface QuizQuestion {
+type QuizMode = "multiple_choice" | "matching";
+
+interface MultipleChoiceQuestion {
+  kind: "multiple_choice";
   itemId: string;
   promptLabel: string;
   options: string[];
   correctOption: string;
 }
+
+interface MatchingPair {
+  itemId: string;
+  symbol: string;
+  description: string;
+}
+
+interface MatchingQuestion {
+  kind: "matching";
+  pairs: MatchingPair[];
+  rightOptions: string[];
+  promptLabel: string;
+}
+
+type QuizQuestion = MultipleChoiceQuestion | MatchingQuestion;
 
 interface MountProgress {
   track: StudyTrack;
@@ -40,6 +58,11 @@ interface KnownEvent {
   timestamp: number;
 }
 
+interface MatchingFeedback {
+  tone: "success" | "error" | "idle";
+  message: string;
+}
+
 type TextScale = 90 | 100 | 110 | 125;
 type SumoCategoryFilter = "all" | SumoTerm["category"];
 
@@ -49,6 +72,8 @@ interface AppSettings {
   includeKnownInLessons: boolean;
   reducedMotion: boolean;
   textScale: TextScale;
+  quizMode: QuizMode;
+  soundEffects: boolean;
 }
 
 type LessonCursorState = Record<StudyTrack, number>;
@@ -57,6 +82,7 @@ const SESSION_TARGET_MINUTES = "5-10";
 const LESSON_CURSOR_STORAGE_KEY = "mount-kanji-lesson-cursor-v2";
 const SETTINGS_STORAGE_KEY = "mount-kanji-settings";
 const REVISIT_INSERTS = 2;
+const MATCHING_BOARD_SIZE = 5;
 const TRAIL_POINTS: Array<{ x: number; y: number }> = [
   { x: 38, y: 92 },
   { x: 52, y: 82 },
@@ -73,6 +99,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   includeKnownInLessons: false,
   reducedMotion: false,
   textScale: 100,
+  quizMode: "multiple_choice",
+  soundEffects: true,
 };
 
 const DEFAULT_LESSON_CURSORS: LessonCursorState = {
@@ -275,12 +303,58 @@ function buildQuizQuestions(items: StudyItem[], pool: StudyItem[]): QuizQuestion
       .map((candidate) => candidate.character);
 
     return {
+      kind: "multiple_choice",
       itemId: item.id,
       promptLabel: item.primaryMeaning,
       options: shuffle([item.character, ...distractors]),
       correctOption: item.character,
     };
   });
+}
+
+function buildMatchingDescription(item: StudyItem): string {
+  if (item.script === "kanji") {
+    return item.primaryMeaning;
+  }
+
+  return `${item.romaji ?? item.primaryMeaning} sound`;
+}
+
+function buildMatchingQuestions(items: StudyItem[]): QuizQuestion[] {
+  const labelCounts = items.reduce<Record<string, number>>((counts, item) => {
+    const label = buildMatchingDescription(item);
+    counts[label] = (counts[label] ?? 0) + 1;
+    return counts;
+  }, {});
+
+  const pairs = items.map((item) => {
+    const baseDescription = buildMatchingDescription(item);
+    const needsDisambiguation = (labelCounts[baseDescription] ?? 0) > 1;
+    const qualifier = item.lessonHint ?? item.row?.replace(/-/g, " ") ?? item.character;
+
+    return {
+      itemId: item.id,
+      symbol: item.character,
+      description: needsDisambiguation ? `${baseDescription} (${qualifier})` : baseDescription,
+    };
+  });
+
+  return [
+    {
+      kind: "matching",
+      pairs,
+      rightOptions: shuffle(pairs.map((pair) => pair.description)),
+      promptLabel: "Match each symbol to its English description.",
+    },
+  ];
+}
+
+function buildQuestionsForMode(items: StudyItem[], pool: StudyItem[], quizMode: QuizMode): QuizQuestion[] {
+  if (quizMode === "matching") {
+    return buildMatchingQuestions(items);
+  }
+
+  return buildQuizQuestions(items, pool);
 }
 
 function buildMountProgress(track: StudyTrack, progressByItem: Record<string, UserStudyProgress>): MountProgress {
@@ -416,12 +490,17 @@ function MountProgressCard({
 }
 
 function App() {
+  const audioContextRef = useRef<AudioContext | null>(null);
   const [screen, setScreen] = useState<Screen>("dashboard");
   const [activeTrack, setActiveTrack] = useState<StudyTrack>("hiragana");
   const [lessonIndex, setLessonIndex] = useState(0);
   const [quizIndex, setQuizIndex] = useState(0);
   const [quizScore, setQuizScore] = useState(0);
   const [lastAnswerCorrect, setLastAnswerCorrect] = useState<boolean | null>(null);
+  const [matchingFeedback, setMatchingFeedback] = useState<MatchingFeedback>({ tone: "idle", message: "" });
+  const [selectedMatchingItemId, setSelectedMatchingItemId] = useState<string | null>(null);
+  const [matchedItemIds, setMatchedItemIds] = useState<string[]>([]);
+  const [incorrectMatchItemIds, setIncorrectMatchItemIds] = useState<string[]>([]);
   const [dashboardMessage, setDashboardMessage] = useState("");
   const [progressByItem, setProgressByItem] = useState<Record<string, UserStudyProgress>>({});
   const [quizAttempts, setQuizAttempts] = useState<QuizAttempt[]>([]);
@@ -475,6 +554,16 @@ function App() {
   const currentPool = currentTrackConfig.pool;
   const currentLessons = currentTrackConfig.lessons;
   const isKanaTrack = activeTrack === "hiragana" || activeTrack === "katakana";
+  const totalQuizUnits = useMemo(
+    () =>
+      quizQuestions.reduce((sum, question) => {
+        if (question.kind === "matching") {
+          return sum + question.pairs.length;
+        }
+        return sum + 1;
+      }, 0),
+    [quizQuestions],
+  );
 
   useEffect(() => {
     let isActive = true;
@@ -731,6 +820,20 @@ function App() {
     return picked;
   }
 
+  function buildMatchingLessonSegment(items: StudyItem[]): StudyItem[] {
+    const uniqueItems = items.filter((item, index, collection) => collection.findIndex((candidate) => candidate.id === item.id) === index);
+
+    if (uniqueItems.length >= MATCHING_BOARD_SIZE) {
+      return uniqueItems.slice(0, MATCHING_BOARD_SIZE);
+    }
+
+    const fallbackItems = shuffle(currentTrailItems)
+      .filter((item) => !uniqueItems.some((candidate) => candidate.id === item.id))
+      .slice(0, MATCHING_BOARD_SIZE - uniqueItems.length);
+
+    return [...uniqueItems, ...fallbackItems].slice(0, MATCHING_BOARD_SIZE);
+  }
+
   function switchTrack(track: StudyTrack) {
     setActiveTrack(track);
     setScreen("dashboard");
@@ -739,6 +842,10 @@ function App() {
     setQuizScore(0);
     setDashboardMessage("");
     setLastAnswerCorrect(null);
+    setMatchingFeedback({ tone: "idle", message: "" });
+    setSelectedMatchingItemId(null);
+    setMatchedItemIds([]);
+    setIncorrectMatchItemIds([]);
     setSessionMissedItemIds([]);
     setKnownEvent(null);
   }
@@ -757,8 +864,17 @@ function App() {
       return;
     }
 
+    const preparedLessonSegment =
+      settings.quizMode === "matching" ? buildMatchingLessonSegment(lessonSegment) : lessonSegment;
+
+    if (settings.quizMode === "matching" && preparedLessonSegment.length < MATCHING_BOARD_SIZE) {
+      setDashboardMessage(`Matching mode needs ${MATCHING_BOARD_SIZE} available ${currentTrackConfig.unitPlural}.`);
+      setScreen("dashboard");
+      return;
+    }
+
     setDashboardMessage("");
-    setActiveLessonItems(lessonSegment);
+    setActiveLessonItems(preparedLessonSegment);
     setActiveLessonTitle(currentLessonDefinition?.title ?? `${currentTrackConfig.label} Lesson`);
     setLessonCursorByTrack((previous) => ({
       ...previous,
@@ -770,49 +886,53 @@ function App() {
     setQuizScore(0);
     setSessionMissedItemIds([]);
     setLastAnswerCorrect(null);
+    setMatchingFeedback({ tone: "idle", message: "" });
+    setSelectedMatchingItemId(null);
+    setMatchedItemIds([]);
+    setIncorrectMatchItemIds([]);
     setKnownEvent(null);
-    setQuizQuestions(buildQuizQuestions(lessonSegment, currentLessonEligibleItems));
+    setQuizQuestions(buildQuestionsForMode(preparedLessonSegment, currentLessonEligibleItems, settings.quizMode));
   }
 
-  function submitAnswer(option: string) {
-    if (!currentQuestion) {
-      return;
-    }
-
-    const isCorrect = option === currentQuestion.correctOption;
-    setLastAnswerCorrect(isCorrect);
-
+  function recordQuizResult(itemId: string, isCorrect: boolean, questionType: QuizType): boolean {
     const attempt: QuizAttempt = {
-      id: `attempt_${Date.now()}_${currentQuestion.itemId}_${quizIndex}`,
-      questionType: activeTrack === "kanji" ? "kanji_recall" : "reading_quiz",
-      itemId: currentQuestion.itemId,
+      id: `attempt_${Date.now()}_${itemId}_${quizIndex}_${questionType}`,
+      questionType,
+      itemId,
       correct: isCorrect,
       answeredAt: new Date().toISOString(),
     };
 
-    const currentProgress = progressByItem[currentQuestion.itemId] ?? createDefaultProgress(currentQuestion.itemId);
+    const currentProgress = progressByItem[itemId] ?? createDefaultProgress(itemId);
     const updatedProgress = reviewTracker.applyResult(currentProgress, isCorrect);
     const becameKnown = currentProgress.status !== "known" && updatedProgress.status === "known";
 
     setQuizAttempts((existing) => [attempt, ...existing].slice(0, 1000));
     setProgressByItem((previous) => ({
       ...previous,
-      [currentQuestion.itemId]: updatedProgress,
+      [itemId]: updatedProgress,
     }));
 
     if (becameKnown) {
       setKnownEvent({
-        itemId: currentQuestion.itemId,
+        itemId,
         track: activeTrack,
         timestamp: Date.now(),
       });
     }
 
-    if (isCorrect) {
-      setQuizScore((value) => value + 1);
-    } else {
-      setSessionMissedItemIds((existing) => (existing.includes(currentQuestion.itemId) ? existing : [...existing, currentQuestion.itemId]));
+    if (!isCorrect) {
+      setSessionMissedItemIds((existing) => (existing.includes(itemId) ? existing : [...existing, itemId]));
     }
+
+    return isCorrect;
+  }
+
+  function advanceQuiz() {
+    setSelectedMatchingItemId(null);
+    setMatchedItemIds([]);
+    setIncorrectMatchItemIds([]);
+    setMatchingFeedback({ tone: "idle", message: "" });
 
     if (quizIndex + 1 >= quizQuestions.length) {
       setScreen("summary");
@@ -820,6 +940,88 @@ function App() {
     }
 
     setQuizIndex((value) => value + 1);
+  }
+
+  function submitAnswer(option: string) {
+    if (!currentQuestion || currentQuestion.kind !== "multiple_choice") {
+      return;
+    }
+
+    const isCorrect = option === currentQuestion.correctOption;
+    setLastAnswerCorrect(isCorrect);
+
+    const scored = recordQuizResult(
+      currentQuestion.itemId,
+      isCorrect,
+      activeTrack === "kanji" ? "kanji_recall" : "reading_quiz",
+    );
+    if (scored) {
+      setQuizScore((value) => value + 1);
+    }
+
+    advanceQuiz();
+  }
+
+  function playFeedbackSound(tone: "success" | "error") {
+    if (!settings.soundEffects || typeof window === "undefined" || !("AudioContext" in window)) {
+      return;
+    }
+
+    const audioContext = audioContextRef.current ?? new window.AudioContext();
+    audioContextRef.current = audioContext;
+
+    const oscillator = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+    oscillator.type = tone === "success" ? "sine" : "square";
+    oscillator.frequency.value = tone === "success" ? 880 : 220;
+    gainNode.gain.value = 0.0001;
+    oscillator.connect(gainNode);
+    gainNode.connect(audioContext.destination);
+
+    const now = audioContext.currentTime;
+    gainNode.gain.exponentialRampToValueAtTime(0.05, now + 0.01);
+    gainNode.gain.exponentialRampToValueAtTime(0.0001, now + (tone === "success" ? 0.14 : 0.2));
+    oscillator.start(now);
+    oscillator.stop(now + (tone === "success" ? 0.16 : 0.22));
+  }
+
+  function tryMatchingPair(itemId: string, description: string) {
+    if (!currentQuestion || currentQuestion.kind !== "matching") {
+      return;
+    }
+
+    const pair = currentQuestion.pairs.find((entry) => entry.itemId === itemId);
+    if (!pair || matchedItemIds.includes(itemId)) {
+      return;
+    }
+
+    const isCorrect = pair.description === description;
+    setLastAnswerCorrect(isCorrect);
+
+    if (!isCorrect) {
+      if (!incorrectMatchItemIds.includes(itemId)) {
+        recordQuizResult(itemId, false, "matching");
+        setIncorrectMatchItemIds((existing) => [...existing, itemId]);
+      }
+      setMatchingFeedback({ tone: "error", message: `${pair.symbol} does not match "${description}".` });
+      playFeedbackSound("error");
+      return;
+    }
+
+    const scored = recordQuizResult(itemId, true, "matching");
+    if (scored && !incorrectMatchItemIds.includes(itemId)) {
+      setQuizScore((value) => value + 1);
+    }
+
+    const nextMatchedItemIds = [...matchedItemIds, itemId];
+    setMatchedItemIds(nextMatchedItemIds);
+    setSelectedMatchingItemId(null);
+    setMatchingFeedback({ tone: "success", message: `${pair.symbol} matched ${description}.` });
+    playFeedbackSound("success");
+
+    if (nextMatchedItemIds.length >= currentQuestion.pairs.length) {
+      setMatchingFeedback({ tone: "success", message: "Board cleared. Continue to the next set." });
+    }
   }
 
   function setItemExcluded(itemId: string, excludedFromLessons: boolean) {
@@ -857,6 +1059,10 @@ function App() {
     setQuizIndex(0);
     setQuizScore(0);
     setLastAnswerCorrect(null);
+    setMatchingFeedback({ tone: "idle", message: "" });
+    setSelectedMatchingItemId(null);
+    setMatchedItemIds([]);
+    setIncorrectMatchItemIds([]);
   }
 
   const trails = [
@@ -957,7 +1163,7 @@ function App() {
 
                   <div className="grid w-full gap-2 sm:grid-cols-2 xl:w-auto xl:grid-cols-3">
                     <button type="button" onClick={startLesson} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
-                      Start Lesson ({SESSION_TARGET_MINUTES} min)
+                      Start {settings.quizMode === "matching" ? "Match" : "Quiz"} Lesson ({SESSION_TARGET_MINUTES} min)
                     </button>
                     <button type="button" onClick={() => setScreen("dictionary")} className="rounded-xl border border-cyan-700 bg-cyan-50 px-4 py-2 text-sm font-semibold text-cyan-900 transition hover:bg-cyan-100">
                       {activeTrack === "kanji" ? "Dictionary" : "Reference Chart"}
@@ -1077,41 +1283,151 @@ function App() {
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div>
                 <p className="text-sm font-semibold uppercase tracking-wide text-emerald-700">
-                  Quiz {quizIndex + 1} of {quizQuestions.length}
+                  {currentQuestion.kind === "matching" ? "Match Board" : "Quiz"} {quizIndex + 1} of {quizQuestions.length}
                 </p>
-                <h2 className="mt-3 text-2xl font-bold text-slate-900">
-                  {currentTrackConfig.promptLabel} "{currentQuestion.promptLabel}"?
-                </h2>
+                {currentQuestion.kind === "multiple_choice" ? (
+                  <h2 className="mt-3 text-2xl font-bold text-slate-900">
+                    {currentTrackConfig.promptLabel} "{currentQuestion.promptLabel}"?
+                  </h2>
+                ) : (
+                  <h2 className="mt-3 text-2xl font-bold text-slate-900">{currentQuestion.promptLabel}</h2>
+                )}
               </div>
               <div className="w-full max-w-md">
                 <MountProgressCard progress={activeMountProgress} active reducedMotion={settings.reducedMotion} />
               </div>
             </div>
 
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              {currentQuestion.options.map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  onClick={() => submitAnswer(option)}
-                  className="rounded-2xl border border-slate-200 bg-white px-3 py-5 text-4xl font-bold text-slate-900 transition hover:border-emerald-500 hover:bg-emerald-50"
-                >
-                  {option}
-                </button>
-              ))}
-            </div>
+            {currentQuestion.kind === "multiple_choice" && (
+              <>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  {currentQuestion.options.map((option) => (
+                    <button
+                      key={option}
+                      type="button"
+                      onClick={() => submitAnswer(option)}
+                      className="rounded-2xl border border-slate-200 bg-white px-3 py-5 text-4xl font-bold text-slate-900 transition hover:border-emerald-500 hover:bg-emerald-50"
+                    >
+                      {option}
+                    </button>
+                  ))}
+                </div>
 
-            {lastAnswerCorrect !== null && (
-              <div className="mt-4 space-y-1">
-                <p className={`text-sm font-semibold ${lastAnswerCorrect ? "text-emerald-700" : "text-rose-700"}`}>
-                  {lastAnswerCorrect ? "Correct." : "Not this one. It will return in a later quiz."}
-                </p>
-                {knownEventItem?.id === currentQuestion.itemId && (
-                  <p className="text-sm font-semibold text-cyan-800">
-                    {knownEventItem.character} is now known. Your climber moved one step higher on {trackConfigs[activeTrack].label}.
-                  </p>
+                {lastAnswerCorrect !== null && (
+                  <div className="mt-4 space-y-1">
+                    <p className={`text-sm font-semibold ${lastAnswerCorrect ? "text-emerald-700" : "text-rose-700"}`}>
+                      {lastAnswerCorrect ? "Correct." : "Not this one. It will return in a later quiz."}
+                    </p>
+                    {knownEventItem?.id === currentQuestion.itemId && (
+                      <p className="text-sm font-semibold text-cyan-800">
+                        {knownEventItem.character} is now known. Your climber moved one step higher on {trackConfigs[activeTrack].label}.
+                      </p>
+                    )}
+                  </div>
                 )}
-              </div>
+              </>
+            )}
+
+            {currentQuestion.kind === "matching" && (
+              <>
+                <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                  <article className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Symbols</p>
+                    <div className="mt-3 space-y-2">
+                      {currentQuestion.pairs.map((pair) => {
+                        const isMatched = matchedItemIds.includes(pair.itemId);
+                        const isSelected = selectedMatchingItemId === pair.itemId;
+                        return (
+                          <button
+                            key={pair.itemId}
+                            type="button"
+                            draggable={!isMatched}
+                            onClick={() => setSelectedMatchingItemId(isMatched ? null : pair.itemId)}
+                            onDragStart={(event) => {
+                              event.dataTransfer.setData("text/plain", pair.itemId);
+                              setSelectedMatchingItemId(pair.itemId);
+                            }}
+                            className={`flex min-h-20 w-full items-center justify-center rounded-2xl border px-4 py-4 text-4xl font-bold transition ${
+                              isMatched
+                                ? "border-emerald-300 bg-emerald-50 text-emerald-900"
+                                : isSelected
+                                  ? "border-cyan-500 bg-cyan-50 text-cyan-950"
+                                  : "border-slate-200 bg-slate-50 text-slate-900 hover:border-cyan-400 hover:bg-cyan-50"
+                            }`}
+                          >
+                            {pair.symbol}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </article>
+
+                  <article className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">English Descriptions</p>
+                    <div className="mt-3 space-y-2">
+                      {currentQuestion.rightOptions.map((description) => {
+                        const matchedItemId = currentQuestion.pairs.find((entry) => entry.description === description)?.itemId;
+                        const isMatched = matchedItemIds.includes(matchedItemId ?? "");
+                        return (
+                          <button
+                            key={description}
+                            type="button"
+                            onClick={() => {
+                              if (selectedMatchingItemId) {
+                                tryMatchingPair(selectedMatchingItemId, description);
+                              }
+                            }}
+                            onDragOver={(event) => event.preventDefault()}
+                            onDrop={(event) => {
+                              event.preventDefault();
+                              const itemId = event.dataTransfer.getData("text/plain");
+                              if (itemId) {
+                                tryMatchingPair(itemId, description);
+                              }
+                            }}
+                            className={`flex min-h-20 w-full items-center rounded-2xl border px-4 py-4 text-left text-base font-semibold transition ${
+                              isMatched
+                                ? "border-emerald-300 bg-emerald-50 text-emerald-900"
+                                : "border-slate-200 bg-slate-50 text-slate-900 hover:border-cyan-400 hover:bg-cyan-50"
+                            }`}
+                          >
+                            {description}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </article>
+                </div>
+
+                <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div className="space-y-1">
+                    <p className={`text-sm font-semibold ${matchingFeedback.tone === "error" ? "text-rose-700" : matchingFeedback.tone === "success" ? "text-emerald-700" : "text-slate-600"}`}>
+                      {matchingFeedback.message || "Tap a symbol, then tap its meaning. Drag and drop also works on desktop."}
+                    </p>
+                    <p className="text-sm text-slate-600">
+                      Matched {matchedItemIds.length} of {currentQuestion.pairs.length}
+                    </p>
+                    {knownEventItem && matchedItemIds.includes(knownEventItem.id) && (
+                      <p className="text-sm font-semibold text-cyan-800">
+                        {knownEventItem.character} is now known. Your climber moved one step higher on {trackConfigs[activeTrack].label}.
+                      </p>
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={advanceQuiz}
+                    disabled={matchedItemIds.length < currentQuestion.pairs.length}
+                    className={`rounded-full px-5 py-2 text-sm font-semibold transition ${
+                      matchedItemIds.length < currentQuestion.pairs.length
+                        ? "cursor-not-allowed border border-slate-300 bg-slate-100 text-slate-400"
+                        : "bg-cyan-700 text-white hover:bg-cyan-600"
+                    }`}
+                  >
+                    {quizIndex + 1 >= quizQuestions.length ? "Finish Trail" : "Next Board"}
+                  </button>
+                </div>
+              </>
             )}
           </section>
         )}
@@ -1121,7 +1437,7 @@ function App() {
             <p className="text-sm font-semibold uppercase tracking-wide text-violet-700">Session Summary</p>
             <h2 className="mt-2 text-3xl font-bold text-slate-900">Trail Segment Complete</h2>
             <p className="mt-3 text-slate-700">
-              You answered {quizScore} out of {quizQuestions.length} correctly. Every correct answer moved a symbol closer to known, and every newly known symbol advanced the climb by one step.
+              You got {quizScore} out of {totalQuizUnits} clean on the first try. Every correct answer moved a symbol closer to known, and every newly known symbol advanced the climb by one step.
             </p>
             {sessionMissedItemIds.length > 0 && (
               <p className="mt-2 text-sm text-slate-600">
@@ -1537,6 +1853,40 @@ function App() {
                     />
                   </label>
                   <p className="text-xs text-slate-500">Applies to Mount Hiragana, Mount Katakana, and Mount Kanji.</p>
+                </div>
+              </article>
+
+              <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <h3 className="text-lg font-semibold text-slate-900">Quiz Mode</h3>
+                <div className="mt-3 space-y-2">
+                  <label className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                    <span className="text-sm font-medium text-slate-800">Activity Type</span>
+                    <select
+                      value={settings.quizMode}
+                      onChange={(event) => {
+                        const quizMode = event.currentTarget.value as QuizMode;
+                        setSettings((previous) => ({ ...previous, quizMode }));
+                      }}
+                      className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-sm"
+                    >
+                      <option value="multiple_choice">Multiple Choice</option>
+                      <option value="matching">Match 5 Pairs</option>
+                    </select>
+                  </label>
+
+                  <label className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                    <span className="text-sm font-medium text-slate-800">Sound Effects</span>
+                    <input
+                      type="checkbox"
+                      checked={settings.soundEffects}
+                      onChange={(event) => {
+                        const soundEffects = event.currentTarget.checked;
+                        setSettings((previous) => ({ ...previous, soundEffects }));
+                      }}
+                      className="h-5 w-5 accent-violet-700"
+                    />
+                  </label>
+                  <p className="text-xs text-slate-500">Matching supports tap-to-pair on touch devices and drag and drop on desktop.</p>
                 </div>
               </article>
 
