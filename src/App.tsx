@@ -383,7 +383,7 @@ function accuracyPercent(row: UserStudyProgress): number {
 }
 
 function buildQuizQuestions(items: StudyItem[], pool: StudyItem[]): QuizQuestion[] {
-  return items.map((item) => {
+  return shuffle(items).map((item) => {
     const distractors = shuffle(pool.filter((candidate) => candidate.id !== item.id))
       .slice(0, 3)
       .map((candidate) => candidate.character);
@@ -926,6 +926,9 @@ function App() {
   const currentLessonItem = activeLessonItems[lessonIndex];
   const currentQuestion = quizQuestions[quizIndex];
   const currentContextExample = contextExamples[contextIndex];
+  const currentLessonKnownCount =
+    currentLessonDefinition?.itemIds.filter((itemId) => progressByItem[itemId]?.status === "known").length ?? 0;
+  const currentLessonTotalCount = currentLessonDefinition?.itemIds.length ?? 0;
 
   const trackAttempts = useMemo(
     () =>
@@ -1147,6 +1150,14 @@ function App() {
     setKnownEvent(null);
   }
 
+  function selectLessonCamp(index: number) {
+    setLessonCursorByTrack((previous) => ({
+      ...previous,
+      [activeTrack]: clamp(index, 0, Math.max(0, currentLessons.length - 1)),
+    }));
+    setDashboardMessage("");
+  }
+
   function startLesson() {
     if (currentLessonEligibleItems.length === 0) {
       setDashboardMessage(`${currentTrackConfig.label} is at the summit. Every symbol on this mount is known.`);
@@ -1183,10 +1194,6 @@ function App() {
     setDashboardMessage("");
     setActiveLessonItems(preparedLessonSegment);
     setActiveLessonTitle(currentLessonDefinition?.title ?? `${currentTrackConfig.label} Lesson`);
-    setLessonCursorByTrack((previous) => ({
-      ...previous,
-      [activeTrack]: (previous[activeTrack] + 1) % Math.max(1, currentLessons.length),
-    }));
     setScreen("lesson");
     setLessonIndex(0);
     setQuizIndex(0);
@@ -1501,27 +1508,6 @@ function App() {
     setIsResolvingConcentrationTurn(false);
   }
 
-  const trails = [
-    {
-      name: currentTrackConfig.trailName,
-      progress: `${activeMountProgress.knownCount} / ${activeMountProgress.totalSteps} known`,
-      focus: currentTrackConfig.introFocus,
-    },
-    {
-      name: "Progress Route",
-      progress: `${activeMountProgress.percentComplete}% complete`,
-      focus: "Steady ascent",
-    },
-    {
-      name: activeTrack === "kanji" ? "Summit Route" : "Practice Route",
-      progress:
-        currentPendingItems.length === 0
-          ? "Summit reached"
-          : `${currentPendingItems.length} ${currentTrackConfig.unitPlural} still climbing`,
-      focus: activeTrack === "kanji" ? "N5 and beyond" : "Full script mastery",
-    },
-  ];
-
   const overviewStats = [
     { label: "Known", value: activeMountProgress.knownCount, tone: "border-emerald-200 bg-emerald-50 text-emerald-900" },
     { label: "Remaining", value: activeMountProgress.remainingCount, tone: "border-amber-200 bg-amber-50 text-amber-900" },
@@ -1529,6 +1515,7 @@ function App() {
     { label: "Accuracy", value: `${overallStats.accuracy}%`, tone: "border-violet-200 bg-violet-50 text-violet-900" },
   ];
 
+  const activeRouteStepId = activeTrack === "hiragana" ? "hiragana-core" : activeTrack === "katakana" ? "katakana-core" : "starter-kanji";
   const knownEventItem = knownEvent ? itemById.get(knownEvent.itemId) : null;
 
   return (
@@ -1564,34 +1551,35 @@ function App() {
               <article className="rounded-xl border border-cyan-100 bg-white p-3 shadow-sm">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-cyan-700">Beginner Trail</p>
-                    <h2 className="mt-1 text-lg font-bold text-slate-900">Base Camp Route</h2>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-cyan-700">Learning Path</p>
+                    <h2 className="mt-1 text-lg font-bold text-slate-900">Where You Are</h2>
                   </div>
-                  <span className="rounded-full bg-cyan-50 px-3 py-1 text-xs font-semibold text-cyan-900">Soft guidance</span>
+                  <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">Progress map</span>
                 </div>
                 <div className="mt-3 grid gap-2 md:grid-cols-5">
-                  {beginnerTrailSteps.map((step, index) => (
-                    <button
+                  {beginnerTrailSteps.map((step, index) => {
+                    const isCurrent = step.id === activeRouteStepId;
+                    return (
+                    <div
                       key={step.id}
-                      type="button"
-                      onClick={() => {
-                        if (step.track) {
-                          switchTrack(step.track);
-                        }
-                      }}
-                      className={`rounded-xl border px-3 py-3 text-left transition ${
-                        step.status === "complete"
+                      className={`rounded-xl border px-3 py-3 text-left ${
+                        isCurrent
+                          ? "border-cyan-500 bg-cyan-50 text-cyan-950 ring-2 ring-cyan-100"
+                          : step.status === "complete"
                           ? "border-emerald-200 bg-emerald-50 text-emerald-950"
-                          : step.status === "recommended"
-                            ? "border-cyan-400 bg-cyan-50 text-cyan-950"
-                            : "border-slate-200 bg-slate-50 text-slate-800 hover:border-cyan-300 hover:bg-cyan-50"
+                          : "border-slate-200 bg-slate-50 text-slate-800"
                       }`}
                     >
-                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Camp {index}</p>
-                      <p className="mt-1 text-sm font-bold">{step.title}</p>
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Camp {index}</p>
+                        {isCurrent && <span className="rounded-full bg-cyan-700 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">Current</span>}
+                        {!isCurrent && step.status === "recommended" && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-900">Recommended</span>}
+                        {step.status === "complete" && <span className="rounded-full bg-emerald-700 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">Done</span>}
+                      </div>
+                      <p className="mt-1 text-sm font-bold leading-tight">{step.title}</p>
                       <p className="mt-1 text-xs leading-snug">{step.detail}</p>
-                    </button>
-                  ))}
+                    </div>
+                  )})}
                 </div>
               </article>
 
@@ -1612,7 +1600,8 @@ function App() {
             </div>
             <div className="grid gap-3 xl:grid-cols-[18rem_minmax(0,1fr)]">
               <article className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-                <h2 className="text-sm font-semibold text-slate-900">Climbs</h2>
+                <h2 className="text-sm font-semibold text-slate-900">Choose Mount</h2>
+                <p className="mt-1 text-xs text-slate-600">Pick the writing system you want to study.</p>
                 <div className="mt-3 space-y-2">
                   {STUDY_TRACK_ORDER.map((track) => (
                     <button
@@ -1639,17 +1628,20 @@ function App() {
                 <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
-                      <h2 className="text-lg font-bold text-slate-900">Trails</h2>
+                      <h2 className="text-lg font-bold text-slate-900">Current Study</h2>
                       <p className="text-sm text-slate-600">
-                        Next lesson: {currentLessonDefinition?.title ?? "Trail Lesson"} ({(currentLessonCursor % trailLessonCount) + 1}/{trailLessonCount})
+                        {currentTrackConfig.label} - {currentLessonDefinition?.title ?? "Trail Lesson"}
                       </p>
                     </div>
+                    <p className="mt-1 text-sm text-slate-600">
+                      Selected camp {currentLessonCursor + 1} of {trailLessonCount}: {currentLessonKnownCount}/{currentLessonTotalCount} known
+                    </p>
                     {dashboardMessage && <p className="mt-2 text-sm font-semibold text-emerald-800">{dashboardMessage}</p>}
                   </div>
 
                   <div className="grid w-full gap-2 sm:grid-cols-2 xl:w-auto xl:grid-cols-3">
                     <button type="button" onClick={startLesson} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
-                      Start {settings.quizMode === "matching" ? "Match" : settings.quizMode === "concentration" ? "Concentration" : "Quiz"} Lesson ({SESSION_TARGET_MINUTES} min)
+                      Start Selected Camp ({SESSION_TARGET_MINUTES} min)
                     </button>
                     <button type="button" onClick={() => setScreen("dictionary")} className="rounded-xl border border-cyan-700 bg-cyan-50 px-4 py-2 text-sm font-semibold text-cyan-900 transition hover:bg-cyan-100">
                       {activeTrack === "kanji" ? "Dictionary" : "Reference Chart"}
@@ -1666,18 +1658,52 @@ function App() {
                   </div>
                 </div>
 
-                <div className="mt-3 grid gap-2 md:grid-cols-3">
-                  {trails.map((trail) => (
-                    <article key={trail.name} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <h3 className="text-sm font-semibold text-slate-900">{trail.name}</h3>
-                          <p className="mt-1 text-xs text-slate-600">{trail.focus}</p>
-                        </div>
-                        <p className="text-xs font-medium text-slate-800">{trail.progress}</p>
-                      </div>
-                    </article>
-                  ))}
+                <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-semibold text-slate-900">Choose Camp</h3>
+                      <p className="mt-1 text-xs text-slate-600">
+                        Camps group similar sounds or related symbols. Pick one, then start the selected camp.
+                      </p>
+                    </div>
+                    <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-200">
+                      {currentTrackConfig.unitPlural}
+                    </span>
+                  </div>
+                  <div className="mt-3 grid max-h-80 gap-2 overflow-y-auto pr-1 sm:grid-cols-2 xl:grid-cols-3">
+                    {currentLessons.map((lesson, index) => {
+                      const lessonKnown = lesson.itemIds.filter((itemId) => progressByItem[itemId]?.status === "known").length;
+                      const isSelected = index === currentLessonCursor;
+                      const isComplete = lesson.itemIds.length > 0 && lessonKnown >= lesson.itemIds.length;
+                      return (
+                        <button
+                          key={lesson.id}
+                          type="button"
+                          onClick={() => selectLessonCamp(index)}
+                          className={`rounded-xl border px-3 py-3 text-left transition ${
+                            isSelected
+                              ? "border-cyan-600 bg-cyan-50 text-cyan-950 ring-2 ring-cyan-100"
+                              : isComplete
+                                ? "border-emerald-200 bg-white text-emerald-950 hover:border-cyan-300 hover:bg-cyan-50"
+                                : "border-slate-200 bg-white text-slate-900 hover:border-cyan-300 hover:bg-cyan-50"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Camp {index + 1}</p>
+                              <p className="mt-1 text-sm font-bold leading-tight">{lesson.title}</p>
+                              <p className="mt-1 text-xs text-slate-600">{lesson.focus}</p>
+                            </div>
+                            {isSelected && <span className="rounded-full bg-cyan-700 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">Selected</span>}
+                            {!isSelected && isComplete && <span className="rounded-full bg-emerald-700 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">Done</span>}
+                          </div>
+                          <p className="mt-2 text-xs font-semibold text-slate-700">
+                            {lessonKnown}/{lesson.itemIds.length} known
+                          </p>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
 
                 <div className="mt-3">
