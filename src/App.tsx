@@ -11,12 +11,14 @@ import { katakanaLessons } from "./data/seed/katakanaLessonCatalog";
 import { katakanaPool } from "./data/seed/katakanaSet";
 import { seedLessons, type SeedLesson } from "./data/seed/lessonCatalog";
 import { sumoTerms, type SumoTerm } from "./data/seed/sumoTerms";
+import { getContextExamplesForItems, writingSystemIntro, type TutorContextExample } from "./data/seed/tutorContent";
 import { createProgressRepository } from "./repositories/progressRepositoryFactory";
 import type { ProgressRepository } from "./repositories/progressRepository";
 import { KNOWN_CORRECT_THRESHOLD, ReviewTracker, resolveStudyStatus } from "./services/reviewTracker";
-import type { QuizAttempt, QuizType, StudyItem, StudyTrack, UserStudyProgress } from "./types";
+import { applyTutorAttempt, buildTutorFeedback, type TutorFeedback } from "./services/tutorEngine";
+import type { QuizAttempt, QuizType, StudyItem, StudyTrack, TutorActivityType, UserStudyProgress } from "./types";
 
-type Screen = "dashboard" | "lesson" | "quiz" | "summary" | "dictionary" | "progress" | "settings" | "sumo";
+type Screen = "dashboard" | "lesson" | "quiz" | "context" | "summary" | "dictionary" | "progress" | "settings" | "sumo";
 
 type QuizMode = "multiple_choice" | "matching" | "concentration";
 
@@ -72,6 +74,14 @@ interface KnownEvent {
   timestamp: number;
 }
 
+interface BeginnerTrailStep {
+  id: string;
+  title: string;
+  detail: string;
+  track?: StudyTrack;
+  status: "recommended" | "available" | "complete";
+}
+
 interface MatchingFeedback {
   tone: "success" | "error" | "idle";
   message: string;
@@ -89,6 +99,7 @@ interface AppSettings {
   showFurigana: boolean;
   showRomaji: boolean;
   includeKnownInLessons: boolean;
+  correctAnswersToKnown: number;
   reducedMotion: boolean;
   textScale: TextScale;
   quizMode: QuizMode;
@@ -118,6 +129,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   showFurigana: true,
   showRomaji: false,
   includeKnownInLessons: false,
+  correctAnswersToKnown: KNOWN_CORRECT_THRESHOLD,
   reducedMotion: false,
   textScale: 100,
   quizMode: "multiple_choice",
@@ -240,13 +252,21 @@ function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
+function normalizeCorrectAnswersToKnown(value: unknown): number {
+  return clamp(Number.isFinite(value) ? Math.floor(value as number) : KNOWN_CORRECT_THRESHOLD, 1, 20);
+}
+
 function createDefaultProgress(itemId: string): UserStudyProgress {
   return {
     id: `progress_${itemId}`,
     itemId,
     status: "new",
+    masteryStage: "teach",
     correctCount: 0,
     incorrectCount: 0,
+    attemptsByActivity: {},
+    correctByActivity: {},
+    confusionHistory: [],
     excludedFromLessons: false,
     lastAnsweredCorrect: null,
     lastReviewedAt: null,
@@ -259,19 +279,36 @@ function normalizeProgressRow(
     status?: string;
     kanjiId?: string;
   },
+  correctAnswersToKnown = KNOWN_CORRECT_THRESHOLD,
 ): UserStudyProgress {
   const base = createDefaultProgress(itemId);
   const correctCount = typeof raw?.correctCount === "number" ? raw.correctCount : 0;
   const incorrectCount = typeof raw?.incorrectCount === "number" ? raw.incorrectCount : 0;
+  const status = resolveStudyStatus(correctCount, incorrectCount, correctAnswersToKnown);
+  const masteryStage =
+    raw?.masteryStage === "teach" ||
+    raw?.masteryStage === "recognize" ||
+    raw?.masteryStage === "recall" ||
+    raw?.masteryStage === "read_words" ||
+    raw?.masteryStage === "read_sentences" ||
+    raw?.masteryStage === "spaced_review"
+      ? raw.masteryStage
+      : status === "known"
+        ? "spaced_review"
+        : "teach";
 
   return {
     ...base,
     ...raw,
     itemId,
     id: typeof raw?.id === "string" ? raw.id : base.id,
-    status: resolveStudyStatus(correctCount, incorrectCount),
+    status,
+    masteryStage,
     correctCount,
     incorrectCount,
+    attemptsByActivity: raw?.attemptsByActivity && typeof raw.attemptsByActivity === "object" ? raw.attemptsByActivity : {},
+    correctByActivity: raw?.correctByActivity && typeof raw.correctByActivity === "object" ? raw.correctByActivity : {},
+    confusionHistory: Array.isArray(raw?.confusionHistory) ? raw.confusionHistory : [],
     excludedFromLessons: Boolean(raw?.excludedFromLessons),
     lastAnsweredCorrect: typeof raw?.lastAnsweredCorrect === "boolean" ? raw.lastAnsweredCorrect : null,
     lastReviewedAt: typeof raw?.lastReviewedAt === "string" ? raw.lastReviewedAt : null,
@@ -469,6 +506,117 @@ function buildMountProgress(track: StudyTrack, progressByItem: Record<string, Us
   };
 }
 
+function recomputeProgressStatuses(
+  progressByItem: Record<string, UserStudyProgress>,
+  correctAnswersToKnown: number,
+): Record<string, UserStudyProgress> {
+  return Object.fromEntries(
+    Object.entries(progressByItem).map(([itemId, row]) => {
+      const status = resolveStudyStatus(row.correctCount, row.incorrectCount, correctAnswersToKnown);
+      return [
+        itemId,
+        {
+          ...row,
+          status,
+          masteryStage: status === "known" ? "spaced_review" : row.masteryStage === "spaced_review" ? "read_sentences" : row.masteryStage,
+        },
+      ];
+    }),
+  );
+}
+
+function buildBeginnerTrailSteps(progressByItem: Record<string, UserStudyProgress>): BeginnerTrailStep[] {
+  const coreHiraganaIds = new Set(hiraganaLessons.slice(0, 10).flatMap((lesson) => lesson.itemIds));
+  const coreKatakanaIds = new Set(katakanaLessons.slice(0, 10).flatMap((lesson) => lesson.itemIds));
+  const starterKanjiIds = new Set(seedLessons.slice(0, 4).flatMap((lesson) => lesson.itemIds));
+
+  const countKnown = (itemIds: Set<string>) =>
+    Array.from(itemIds).filter((itemId) => progressByItem[itemId]?.status === "known").length;
+  const statusFor = (known: number, total: number, priorComplete: boolean): BeginnerTrailStep["status"] => {
+    if (total > 0 && known >= total) {
+      return "complete";
+    }
+    return priorComplete ? "recommended" : "available";
+  };
+
+  const hiraganaKnown = countKnown(coreHiraganaIds);
+  const katakanaKnown = countKnown(coreKatakanaIds);
+  const kanjiKnown = countKnown(starterKanjiIds);
+  const hiraganaComplete = hiraganaKnown >= coreHiraganaIds.size;
+  const katakanaComplete = katakanaKnown >= coreKatakanaIds.size;
+  const kanjiComplete = kanjiKnown >= starterKanjiIds.size;
+
+  return [
+    {
+      id: "writing-basics",
+      title: writingSystemIntro.title,
+      detail: "Understand why Hiragana, Katakana, and Kanji appear together.",
+      status: "recommended",
+    },
+    {
+      id: "hiragana-core",
+      title: "Hiragana Camps",
+      detail: `${hiraganaKnown}/${coreHiraganaIds.size} core hiragana known`,
+      track: "hiragana",
+      status: statusFor(hiraganaKnown, coreHiraganaIds.size, true),
+    },
+    {
+      id: "katakana-core",
+      title: "Katakana Camps",
+      detail: `${katakanaKnown}/${coreKatakanaIds.size} core katakana known`,
+      track: "katakana",
+      status: statusFor(katakanaKnown, coreKatakanaIds.size, hiraganaComplete),
+    },
+    {
+      id: "starter-kanji",
+      title: "Starter Kanji Ridge",
+      detail: `${kanjiKnown}/${starterKanjiIds.size} starter kanji known`,
+      track: "kanji",
+      status: statusFor(kanjiKnown, starterKanjiIds.size, hiraganaComplete && katakanaComplete),
+    },
+    {
+      id: "real-reading",
+      title: "Read Real Japanese",
+      detail: "Practice words and short phrases with highlighted symbols.",
+      status: kanjiComplete ? "recommended" : "available",
+    },
+  ];
+}
+
+function pickTutorNote(progressRows: UserStudyProgress[], pool: StudyItem[], currentLessonTitle: string): string {
+  const itemByCurrentId = new Map(pool.map((item) => [item.id, item]));
+  const confused = progressRows
+    .filter((row) => itemByCurrentId.has(row.itemId) && row.confusionHistory.length > 0)
+    .sort((a, b) => {
+      const aConfusions = a.confusionHistory.reduce((sum, entry) => sum + entry.count, 0);
+      const bConfusions = b.confusionHistory.reduce((sum, entry) => sum + entry.count, 0);
+      return bConfusions - aConfusions;
+    })[0];
+
+  if (confused) {
+    const item = itemByCurrentId.get(confused.itemId);
+    const topConfusion = [...confused.confusionHistory].sort((a, b) => b.count - a.count)[0];
+    const confusedWith = topConfusion ? itemById.get(topConfusion.confusedWithItemId) : null;
+    if (item && confusedWith) {
+      return `Tutor note: you are mixing up ${item.character} and ${confusedWith.character}. Expect extra recognition practice.`;
+    }
+  }
+
+  const readingWeakness = progressRows
+    .map((row) => ({ row, item: itemByCurrentId.get(row.itemId) }))
+    .find(({ row, item }) => item && row.correctCount >= 3 && row.masteryStage === "read_words");
+  if (readingWeakness?.item) {
+    return `Tutor note: you recognize ${readingWeakness.item.character}. Next we will place it inside real words.`;
+  }
+
+  return `Tutor note: your next best step is ${currentLessonTitle}.`;
+}
+
+function highlightContextText(example: TutorContextExample, items: StudyItem[]): string[] {
+  const targets = new Set(items.filter((item) => example.targetItemIds.includes(item.id)).map((item) => item.character));
+  return Array.from(example.written).map((character) => (targets.has(character) ? `[${character}]` : character));
+}
+
 function interpolateTrailPoint(progressRatio: number): { x: number; y: number } {
   const clampedRatio = clamp(progressRatio, 0, 1);
 
@@ -533,11 +681,13 @@ function MountProgressCard({
   progress,
   active,
   reducedMotion,
+  correctAnswersToKnown,
   onSelect,
 }: {
   progress: MountProgress;
   active: boolean;
   reducedMotion: boolean;
+  correctAnswersToKnown: number;
   onSelect?: () => void;
 }) {
   return (
@@ -578,7 +728,7 @@ function MountProgressCard({
           </div>
           <div className="rounded-xl bg-slate-50 p-3">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Known Threshold</p>
-            <p className="mt-1 text-sm font-semibold text-slate-900">{KNOWN_CORRECT_THRESHOLD} correct answers per symbol</p>
+            <p className="mt-1 text-sm font-semibold text-slate-900">{correctAnswersToKnown} correct answers per symbol</p>
           </div>
         </div>
       </div>
@@ -592,8 +742,9 @@ function App() {
   const [activeTrack, setActiveTrack] = useState<StudyTrack>("hiragana");
   const [lessonIndex, setLessonIndex] = useState(0);
   const [quizIndex, setQuizIndex] = useState(0);
+  const [contextIndex, setContextIndex] = useState(0);
   const [quizScore, setQuizScore] = useState(0);
-  const [lastAnswerCorrect, setLastAnswerCorrect] = useState<boolean | null>(null);
+  const [answerFeedback, setAnswerFeedback] = useState<TutorFeedback | null>(null);
   const [matchingFeedback, setMatchingFeedback] = useState<MatchingFeedback>({ tone: "idle", message: "" });
   const [concentrationFeedback, setConcentrationFeedback] = useState<ConcentrationFeedback>({ tone: "idle", message: "" });
   const [selectedMatchingItemId, setSelectedMatchingItemId] = useState<string | null>(null);
@@ -614,7 +765,12 @@ function App() {
     }
 
     try {
-      return { ...DEFAULT_SETTINGS, ...(JSON.parse(serialized) as Partial<AppSettings>) };
+      const parsed = JSON.parse(serialized) as Partial<AppSettings>;
+      return {
+        ...DEFAULT_SETTINGS,
+        ...parsed,
+        correctAnswersToKnown: normalizeCorrectAnswersToKnown(parsed.correctAnswersToKnown),
+      };
     } catch {
       return DEFAULT_SETTINGS;
     }
@@ -630,6 +786,7 @@ function App() {
     return firstLesson ? firstLesson.itemIds.map((id) => itemById.get(id)).filter(Boolean) as StudyItem[] : [];
   });
   const [activeLessonTitle, setActiveLessonTitle] = useState<string>(trackConfigs.hiragana.lessons[0]?.title ?? "Trail Lesson");
+  const [contextExamples, setContextExamples] = useState<TutorContextExample[]>([]);
   const [quizQuestions, setQuizQuestions] = useState<QuizQuestion[]>([]);
   const [progressRepository, setProgressRepository] = useState<ProgressRepository | null>(null);
   const [isProgressHydrated, setIsProgressHydrated] = useState(false);
@@ -685,7 +842,7 @@ function App() {
       }
 
       const normalizedProgress = Object.fromEntries(
-        Object.entries(loadedProgress).map(([itemId, row]) => [itemId, normalizeProgressRow(itemId, row)]),
+        Object.entries(loadedProgress).map(([itemId, row]) => [itemId, normalizeProgressRow(itemId, row, settings.correctAnswersToKnown)]),
       );
       setProgressByItem(normalizedProgress);
       setQuizAttempts(loadedAttempts);
@@ -696,6 +853,14 @@ function App() {
       isActive = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!isProgressHydrated) {
+      return;
+    }
+
+    setProgressByItem((previous) => recomputeProgressStatuses(previous, settings.correctAnswersToKnown));
+  }, [isProgressHydrated, settings.correctAnswersToKnown]);
 
   useEffect(() => {
     if (!progressRepository || !isProgressHydrated) {
@@ -760,6 +925,7 @@ function App() {
   const currentLessonDefinition = currentLessons[currentLessonCursor];
   const currentLessonItem = activeLessonItems[lessonIndex];
   const currentQuestion = quizQuestions[quizIndex];
+  const currentContextExample = contextExamples[contextIndex];
 
   const trackAttempts = useMemo(
     () =>
@@ -811,6 +977,11 @@ function App() {
   }, [currentPool, progressByItem]);
 
   const recentAttempts = trackAttempts.slice(0, 5);
+  const beginnerTrailSteps = useMemo(() => buildBeginnerTrailSteps(progressByItem), [progressByItem]);
+  const tutorNote = useMemo(
+    () => pickTutorNote(Object.values(progressByItem), currentPool, currentLessonDefinition?.title ?? "the next trail segment"),
+    [currentLessonDefinition?.title, currentPool, progressByItem],
+  );
 
   const availableRadicals = useMemo(() => {
     if (activeTrack !== "kanji") {
@@ -960,9 +1131,10 @@ function App() {
     setScreen("dashboard");
     setLessonIndex(0);
     setQuizIndex(0);
+    setContextIndex(0);
     setQuizScore(0);
     setDashboardMessage("");
-    setLastAnswerCorrect(null);
+    setAnswerFeedback(null);
     setMatchingFeedback({ tone: "idle", message: "" });
     setConcentrationFeedback({ tone: "idle", message: "" });
     setSelectedMatchingItemId(null);
@@ -1018,9 +1190,10 @@ function App() {
     setScreen("lesson");
     setLessonIndex(0);
     setQuizIndex(0);
+    setContextIndex(0);
     setQuizScore(0);
     setSessionMissedItemIds([]);
-    setLastAnswerCorrect(null);
+    setAnswerFeedback(null);
     setMatchingFeedback({ tone: "idle", message: "" });
     setConcentrationFeedback({ tone: "idle", message: "" });
     setSelectedMatchingItemId(null);
@@ -1030,10 +1203,26 @@ function App() {
     setConcentrationMatchedItemIds([]);
     setIsResolvingConcentrationTurn(false);
     setKnownEvent(null);
+    setContextExamples(getContextExamplesForItems(preparedLessonSegment));
     setQuizQuestions(buildQuestionsForMode(preparedLessonSegment, currentLessonEligibleItems, settings.quizMode));
   }
 
-  function recordQuizResult(itemId: string, isCorrect: boolean, questionType: QuizType): boolean {
+  function recordTutorActivity(itemId: string, activityType: TutorActivityType, isCorrect = true, selectedItemId?: string | null) {
+    setProgressByItem((previous) => {
+      const currentProgress = previous[itemId] ?? createDefaultProgress(itemId);
+      return {
+        ...previous,
+        [itemId]: applyTutorAttempt({
+          progress: currentProgress,
+          correct: isCorrect,
+          activityType,
+          selectedItemId,
+        }),
+      };
+    });
+  }
+
+  function recordQuizResult(itemId: string, isCorrect: boolean, questionType: QuizType, selectedItemId?: string | null): boolean {
     const attempt: QuizAttempt = {
       id: `attempt_${Date.now()}_${itemId}_${quizIndex}_${questionType}`,
       questionType,
@@ -1043,7 +1232,13 @@ function App() {
     };
 
     const currentProgress = progressByItem[itemId] ?? createDefaultProgress(itemId);
-    const updatedProgress = reviewTracker.applyResult(currentProgress, isCorrect);
+    const updatedProgress = reviewTracker.applyResult(
+      currentProgress,
+      isCorrect,
+      new Date(),
+      selectedItemId,
+      settings.correctAnswersToKnown,
+    );
     const becameKnown = currentProgress.status !== "known" && updatedProgress.status === "known";
 
     setQuizAttempts((existing) => [attempt, ...existing].slice(0, 1000));
@@ -1067,6 +1262,36 @@ function App() {
     return isCorrect;
   }
 
+  function advanceFromTeach() {
+    if (currentLessonItem) {
+      recordTutorActivity(currentLessonItem.id, "teach_card");
+    }
+
+    if (lessonIndex + 1 >= activeLessonItems.length) {
+      setScreen("quiz");
+      return;
+    }
+
+    setLessonIndex((value) => value + 1);
+  }
+
+  function advanceContext() {
+    if (currentContextExample) {
+      for (const itemId of currentContextExample.targetItemIds) {
+        if (activeLessonItems.some((item) => item.id === itemId)) {
+          recordTutorActivity(itemId, "context_highlight");
+        }
+      }
+    }
+
+    if (contextIndex + 1 >= contextExamples.length) {
+      setScreen("summary");
+      return;
+    }
+
+    setContextIndex((value) => value + 1);
+  }
+
   function advanceQuiz() {
     setSelectedMatchingItemId(null);
     setMatchedItemIds([]);
@@ -1076,9 +1301,10 @@ function App() {
     setFlippedCardIds([]);
     setConcentrationMatchedItemIds([]);
     setIsResolvingConcentrationTurn(false);
+    setAnswerFeedback(null);
 
     if (quizIndex + 1 >= quizQuestions.length) {
-      setScreen("summary");
+      setScreen(contextExamples.length > 0 ? "context" : "summary");
       return;
     }
 
@@ -1086,23 +1312,29 @@ function App() {
   }
 
   function submitAnswer(option: string) {
-    if (!currentQuestion || currentQuestion.kind !== "multiple_choice") {
+    if (!currentQuestion || currentQuestion.kind !== "multiple_choice" || answerFeedback) {
       return;
     }
 
     const isCorrect = option === currentQuestion.correctOption;
-    setLastAnswerCorrect(isCorrect);
+    const selectedItem = allItems.find((item) => item.character === option && item.script === activeTrack) ?? null;
+    const targetItem = itemById.get(currentQuestion.itemId);
 
     const scored = recordQuizResult(
       currentQuestion.itemId,
       isCorrect,
       activeTrack === "kanji" ? "kanji_recall" : "reading_quiz",
+      selectedItem?.id,
     );
     if (scored) {
       setQuizScore((value) => value + 1);
     }
 
-    advanceQuiz();
+    if (targetItem) {
+      setAnswerFeedback(buildTutorFeedback({ item: targetItem, selectedItem, correct: isCorrect }));
+    } else {
+      advanceQuiz();
+    }
   }
 
   function playFeedbackSound(tone: "success" | "error") {
@@ -1139,7 +1371,6 @@ function App() {
     }
 
     const isCorrect = pair.description === description;
-    setLastAnswerCorrect(isCorrect);
 
     if (!isCorrect) {
       if (!incorrectMatchItemIds.includes(itemId)) {
@@ -1194,7 +1425,6 @@ function App() {
     }
 
     const isMatch = firstCard.itemId === secondCard.itemId && firstCard.side !== secondCard.side;
-    setLastAnswerCorrect(isMatch);
 
     if (isMatch) {
       if (!concentrationMatchedItemIds.includes(firstCard.itemId)) {
@@ -1245,7 +1475,8 @@ function App() {
         [itemId]: {
           ...currentProgress,
           status: "known",
-          correctCount: Math.max(currentProgress.correctCount, KNOWN_CORRECT_THRESHOLD),
+          masteryStage: "spaced_review",
+          correctCount: Math.max(currentProgress.correctCount, settings.correctAnswersToKnown),
           lastAnsweredCorrect: true,
           lastReviewedAt: new Date().toISOString(),
         },
@@ -1257,8 +1488,9 @@ function App() {
     setScreen("dashboard");
     setLessonIndex(0);
     setQuizIndex(0);
+    setContextIndex(0);
     setQuizScore(0);
-    setLastAnswerCorrect(null);
+    setAnswerFeedback(null);
     setMatchingFeedback({ tone: "idle", message: "" });
     setConcentrationFeedback({ tone: "idle", message: "" });
     setSelectedMatchingItemId(null);
@@ -1328,6 +1560,56 @@ function App() {
 
         {screen === "dashboard" && (
           <section className="rounded-2xl border border-white/70 bg-white/80 p-3 shadow-lg backdrop-blur">
+            <div className="mb-3 grid gap-3 lg:grid-cols-[minmax(0,1.5fr)_minmax(20rem,0.8fr)]">
+              <article className="rounded-xl border border-cyan-100 bg-white p-3 shadow-sm">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-cyan-700">Beginner Trail</p>
+                    <h2 className="mt-1 text-lg font-bold text-slate-900">Base Camp Route</h2>
+                  </div>
+                  <span className="rounded-full bg-cyan-50 px-3 py-1 text-xs font-semibold text-cyan-900">Soft guidance</span>
+                </div>
+                <div className="mt-3 grid gap-2 md:grid-cols-5">
+                  {beginnerTrailSteps.map((step, index) => (
+                    <button
+                      key={step.id}
+                      type="button"
+                      onClick={() => {
+                        if (step.track) {
+                          switchTrack(step.track);
+                        }
+                      }}
+                      className={`rounded-xl border px-3 py-3 text-left transition ${
+                        step.status === "complete"
+                          ? "border-emerald-200 bg-emerald-50 text-emerald-950"
+                          : step.status === "recommended"
+                            ? "border-cyan-400 bg-cyan-50 text-cyan-950"
+                            : "border-slate-200 bg-slate-50 text-slate-800 hover:border-cyan-300 hover:bg-cyan-50"
+                      }`}
+                    >
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Camp {index}</p>
+                      <p className="mt-1 text-sm font-bold">{step.title}</p>
+                      <p className="mt-1 text-xs leading-snug">{step.detail}</p>
+                    </button>
+                  ))}
+                </div>
+              </article>
+
+              <article className="rounded-xl border border-emerald-100 bg-white p-3 shadow-sm">
+                <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Tutor Notes</p>
+                <p className="mt-2 text-sm font-semibold text-slate-900">{tutorNote}</p>
+                <div className="mt-3 rounded-lg bg-slate-50 p-3">
+                  <p className="text-sm font-semibold text-slate-900">{writingSystemIntro.sentence}</p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {writingSystemIntro.labels.map((label) => (
+                      <span key={`${label.text}-${label.role}`} className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-200">
+                        {label.text}: {label.script}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </article>
+            </div>
             <div className="grid gap-3 xl:grid-cols-[18rem_minmax(0,1fr)]">
               <article className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
                 <h2 className="text-sm font-semibold text-slate-900">Climbs</h2>
@@ -1402,7 +1684,12 @@ function App() {
                   <article className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
                     <h3 className="text-sm font-semibold text-slate-900">Current Climb</h3>
                     <div className="mt-3">
-                      <MountProgressCard progress={activeMountProgress} active reducedMotion={settings.reducedMotion} />
+                      <MountProgressCard
+                        progress={activeMountProgress}
+                        active
+                        reducedMotion={settings.reducedMotion}
+                        correctAnswersToKnown={settings.correctAnswersToKnown}
+                      />
                     </div>
                   </article>
                 </div>
@@ -1429,7 +1716,7 @@ function App() {
                   <article className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
                     <h3 className="text-sm font-semibold text-slate-900">Mount Rule</h3>
                     <p className="mt-2 text-sm text-slate-700">
-                      A symbol becomes known after {KNOWN_CORRECT_THRESHOLD} cumulative correct answers. Misses still count as misses, but they never erase earlier progress.
+                      A symbol becomes known after {settings.correctAnswersToKnown} cumulative correct answers. Misses still count as misses, but they never erase earlier progress.
                     </p>
                     <p className="mt-2 text-sm text-slate-700">
                       Known symbols leave future quizzes, and every newly known symbol moves you one step closer to the summit.
@@ -1443,7 +1730,7 @@ function App() {
 
         {screen === "lesson" && currentLessonItem && (
           <section className="rounded-3xl border border-white/70 bg-white/85 p-4 shadow-lg backdrop-blur">
-            <p className="text-sm font-semibold uppercase tracking-wide text-cyan-800">{activeLessonTitle}</p>
+            <p className="text-sm font-semibold uppercase tracking-wide text-cyan-800">Teach Phase - {activeLessonTitle}</p>
             <p className="text-sm font-semibold uppercase tracking-wide text-cyan-700">
               Lesson Step {lessonIndex + 1} of {activeLessonItems.length}
             </p>
@@ -1452,6 +1739,9 @@ function App() {
               <p className="mt-3 text-2xl font-semibold text-slate-800">{currentLessonItem.primaryMeaning}</p>
               {currentLessonItem.lessonHint && <p className="mt-2 text-sm font-medium text-cyan-700">{currentLessonItem.lessonHint}</p>}
               <p className="mt-2 text-slate-600">{currentLessonItem.mnemonic}</p>
+              <p className="mt-3 text-sm font-semibold text-emerald-800">
+                Why this matters: this symbol appears in your upcoming recognition and reading practice.
+              </p>
               {activeTrack === "kanji" && settings.showFurigana && (
                 <p className="mt-3 text-sm text-slate-500">
                   Kun: {formatReadings(currentLessonItem.kunyomi, settings.showRomaji)} | On: {formatReadings(currentLessonItem.onyomi, settings.showRomaji)}
@@ -1467,16 +1757,10 @@ function App() {
             <div className="mt-3 flex justify-end">
               <button
                 type="button"
-                onClick={() => {
-                  if (lessonIndex + 1 >= activeLessonItems.length) {
-                    setScreen("quiz");
-                    return;
-                  }
-                  setLessonIndex((value) => value + 1);
-                }}
+                onClick={advanceFromTeach}
                 className="rounded-full bg-cyan-700 px-5 py-2 text-sm font-semibold text-white transition hover:bg-cyan-600"
               >
-                {lessonIndex + 1 === activeLessonItems.length ? "Start Quiz" : `Next ${activeTrack === "kanji" ? "Kanji" : "Character"}`}
+                {lessonIndex + 1 === activeLessonItems.length ? "Start Recall" : `Next ${activeTrack === "kanji" ? "Kanji" : "Character"}`}
               </button>
             </div>
           </section>
@@ -1502,7 +1786,12 @@ function App() {
                 )}
               </div>
               <div className="w-full max-w-md">
-                <MountProgressCard progress={activeMountProgress} active reducedMotion={settings.reducedMotion} />
+                <MountProgressCard
+                  progress={activeMountProgress}
+                  active
+                  reducedMotion={settings.reducedMotion}
+                  correctAnswersToKnown={settings.correctAnswersToKnown}
+                />
               </div>
             </div>
 
@@ -1514,6 +1803,7 @@ function App() {
                       key={option}
                       type="button"
                       onClick={() => submitAnswer(option)}
+                      disabled={Boolean(answerFeedback)}
                       className="rounded-2xl border border-slate-200 bg-white px-3 py-5 text-4xl font-bold text-slate-900 transition hover:border-emerald-500 hover:bg-emerald-50"
                     >
                       {option}
@@ -1521,16 +1811,29 @@ function App() {
                   ))}
                 </div>
 
-                {lastAnswerCorrect !== null && (
-                  <div className="mt-4 space-y-1">
-                    <p className={`text-sm font-semibold ${lastAnswerCorrect ? "text-emerald-700" : "text-rose-700"}`}>
-                      {lastAnswerCorrect ? "Correct." : "Not this one. It will return in a later quiz."}
-                    </p>
+                {answerFeedback && (
+                  <div
+                    className={`mt-4 rounded-2xl border p-4 ${
+                      answerFeedback.tone === "success"
+                        ? "border-emerald-200 bg-emerald-50 text-emerald-950"
+                        : "border-rose-200 bg-rose-50 text-rose-950"
+                    }`}
+                  >
+                    <p className="text-sm font-bold">{answerFeedback.title}</p>
+                    <p className="mt-1 text-sm">{answerFeedback.message}</p>
+                    <p className="mt-1 text-sm font-semibold">{answerFeedback.nextAction}</p>
                     {knownEventItem?.id === currentQuestion.itemId && (
                       <p className="text-sm font-semibold text-cyan-800">
                         {knownEventItem.character} is now known. Your climber moved one step higher on {trackConfigs[activeTrack].label}.
                       </p>
                     )}
+                    <button
+                      type="button"
+                      onClick={advanceQuiz}
+                      className="mt-3 rounded-full bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition hover:bg-slate-700"
+                    >
+                      {quizIndex + 1 >= quizQuestions.length ? (contextExamples.length > 0 ? "Start Context Reading" : "Finish Trail") : "Continue"}
+                    </button>
                   </div>
                 )}
               </>
@@ -1710,6 +2013,44 @@ function App() {
           </section>
         )}
 
+        {screen === "context" && currentContextExample && (
+          <section className="rounded-3xl border border-white/70 bg-white/85 p-4 shadow-lg backdrop-blur">
+            <p className="text-sm font-semibold uppercase tracking-wide text-violet-700">Recognition In Context - {activeLessonTitle}</p>
+            <h2 className="mt-2 text-2xl font-bold text-slate-900">Read The Word</h2>
+
+            <div className="mt-4 rounded-2xl border border-violet-100 bg-white p-5">
+              <p className="flex flex-wrap gap-1 text-6xl font-bold leading-tight text-slate-900">
+                {highlightContextText(currentContextExample, activeLessonItems).map((piece, index) =>
+                  piece.startsWith("[") && piece.endsWith("]") ? (
+                    <span key={`${piece}-${index}`} className="rounded-xl bg-amber-100 px-1 text-amber-950">
+                      {piece.slice(1, -1)}
+                    </span>
+                  ) : (
+                    <span key={`${piece}-${index}`}>{piece}</span>
+                  ),
+                )}
+              </p>
+              <p className="mt-4 text-xl font-semibold text-slate-800">{currentContextExample.reading}</p>
+              {settings.showRomaji && <p className="mt-1 text-sm font-semibold text-slate-500">{currentContextExample.romaji}</p>}
+              <p className="mt-2 text-sm text-slate-700">{currentContextExample.meaning}</p>
+              <p className="mt-3 text-sm font-semibold text-violet-800">{currentContextExample.explanation}</p>
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+              <p className="text-sm font-semibold text-slate-700">
+                Context card {contextIndex + 1} of {contextExamples.length}
+              </p>
+              <button
+                type="button"
+                onClick={advanceContext}
+                className="rounded-full bg-violet-700 px-5 py-2 text-sm font-semibold text-white transition hover:bg-violet-600"
+              >
+                {contextIndex + 1 >= contextExamples.length ? "Finish Trail" : "Next Word"}
+              </button>
+            </div>
+          </section>
+        )}
+
         {screen === "summary" && (
           <section className="rounded-3xl border border-white/70 bg-white/85 p-4 shadow-lg backdrop-blur">
             <p className="text-sm font-semibold uppercase tracking-wide text-violet-700">Session Summary</p>
@@ -1719,7 +2060,7 @@ function App() {
             </p>
             {sessionMissedItemIds.length > 0 && (
               <p className="mt-2 text-sm text-slate-600">
-                {sessionMissedItemIds.length} missed {sessionMissedItemIds.length === 1 ? "symbol" : "symbols"} will return during later quizzes until they reach {KNOWN_CORRECT_THRESHOLD} correct answers.
+                {sessionMissedItemIds.length} missed {sessionMissedItemIds.length === 1 ? "symbol" : "symbols"} will return during later quizzes until they reach {settings.correctAnswersToKnown} correct answers.
               </p>
             )}
             {knownEventItem && (
@@ -1744,7 +2085,12 @@ function App() {
             </div>
 
             <div className="mt-4">
-              <MountProgressCard progress={activeMountProgress} active reducedMotion={settings.reducedMotion} />
+              <MountProgressCard
+                progress={activeMountProgress}
+                active
+                reducedMotion={settings.reducedMotion}
+                correctAnswersToKnown={settings.correctAnswersToKnown}
+              />
             </div>
 
             <div className="mt-4 flex flex-wrap gap-3">
@@ -1954,7 +2300,7 @@ function App() {
                         <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Study Status</p>
                         <p className="mt-1 text-sm font-semibold capitalize text-slate-900">{selectedDictionaryProgress.status}</p>
                         <p className="text-xs text-slate-600">
-                          Correct answers: {selectedDictionaryProgress.correctCount}/{KNOWN_CORRECT_THRESHOLD}
+                          Correct answers: {selectedDictionaryProgress.correctCount}/{settings.correctAnswersToKnown}
                         </p>
                         <p className="text-xs text-slate-600">Accuracy: {accuracyPercent(selectedDictionaryProgress)}%</p>
                         <button
@@ -2008,6 +2354,7 @@ function App() {
                   progress={mountProgressByTrack[track]}
                   active={track === activeTrack}
                   reducedMotion={settings.reducedMotion}
+                  correctAnswersToKnown={settings.correctAnswersToKnown}
                   onSelect={() => setActiveTrack(track)}
                 />
               ))}
@@ -2128,6 +2475,20 @@ function App() {
                         setSettings((previous) => ({ ...previous, includeKnownInLessons: checked }));
                       }}
                       className="h-5 w-5 accent-violet-700"
+                    />
+                  </label>
+                  <label className="flex items-center justify-between gap-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                    <span className="text-sm font-medium text-slate-800">Correct Answers To Become Known</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={settings.correctAnswersToKnown}
+                      onChange={(event) => {
+                        const correctAnswersToKnown = normalizeCorrectAnswersToKnown(event.currentTarget.valueAsNumber);
+                        setSettings((previous) => ({ ...previous, correctAnswersToKnown }));
+                      }}
+                      className="w-20 rounded-lg border border-slate-300 bg-white px-2 py-1 text-right text-sm font-semibold text-slate-900"
                     />
                   </label>
                   <p className="text-xs text-slate-500">Applies to Mount Hiragana, Mount Katakana, and Mount Kanji.</p>

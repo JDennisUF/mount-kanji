@@ -8,8 +8,12 @@ function progressSeed(overrides: Partial<UserStudyProgress> = {}): UserStudyProg
     id: "p1",
     itemId: "kanji_n5_001",
     status: "new",
+    masteryStage: "teach",
     correctCount: 0,
     incorrectCount: 0,
+    attemptsByActivity: {},
+    correctByActivity: {},
+    confusionHistory: [],
     excludedFromLessons: false,
     lastAnsweredCorrect: null,
     lastReviewedAt: null,
@@ -36,6 +40,19 @@ describe("ReviewTracker", () => {
     );
 
     expect(updated.correctCount).toBe(5);
+    expect(updated.status).toBe("known");
+  });
+
+  it("uses a caller-provided threshold for known status", () => {
+    const updated = tracker.applyResult(
+      progressSeed({ correctCount: 2, status: "learning" }),
+      true,
+      new Date("2026-07-25T00:00:00.000Z"),
+      null,
+      3,
+    );
+
+    expect(updated.correctCount).toBe(3);
     expect(updated.status).toBe("known");
   });
 
