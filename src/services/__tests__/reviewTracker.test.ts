@@ -66,4 +66,13 @@ describe("ReviewTracker", () => {
 
     expect(queue.map((item) => item.itemId)).toEqual(["b", "a"]);
   });
+
+  it("does not trust stale stored known status when queueing", () => {
+    const queue = tracker.getQueue([
+      progressSeed({ itemId: "stale", correctCount: 2, status: "known" }),
+      progressSeed({ itemId: "complete", correctCount: 5, status: "learning" }),
+    ], 5);
+
+    expect(queue.map((item) => item.itemId)).toEqual(["stale"]);
+  });
 });

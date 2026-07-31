@@ -2,6 +2,8 @@ import type { ConfusionPair } from "../data/seed/tutorContent";
 import { tutorConfusionPairs } from "../data/seed/tutorContent";
 import type { StudyItem, TutorActivityType, TutorMasteryStage, UserStudyProgress } from "../types";
 
+const DEFAULT_CORRECT_ANSWERS_TO_KNOWN = 5;
+
 export interface TutorFeedback {
   tone: "success" | "error";
   title: string;
@@ -14,6 +16,7 @@ export interface TutorAttemptInput {
   correct: boolean;
   activityType: TutorActivityType;
   selectedItemId?: string | null;
+  correctAnswersToKnown?: number;
   now?: Date;
 }
 
@@ -32,8 +35,23 @@ function maxStage(current: TutorMasteryStage, candidate: TutorMasteryStage): Tut
   return (stageRank.get(candidate) ?? 0) > (stageRank.get(current) ?? 0) ? candidate : current;
 }
 
-export function resolveTutorMasteryStage(progress: UserStudyProgress): TutorMasteryStage {
-  if (progress.status === "known") {
+function resolveCalculatedStatus(progress: UserStudyProgress, correctAnswersToKnown: number) {
+  if (progress.correctCount === 0 && progress.incorrectCount === 0) {
+    return "new";
+  }
+
+  if (progress.correctCount >= correctAnswersToKnown) {
+    return "known";
+  }
+
+  return "learning";
+}
+
+export function resolveTutorMasteryStage(
+  progress: UserStudyProgress,
+  correctAnswersToKnown = DEFAULT_CORRECT_ANSWERS_TO_KNOWN,
+): TutorMasteryStage {
+  if (resolveCalculatedStatus(progress, correctAnswersToKnown) === "known") {
     return "spaced_review";
   }
 
@@ -61,6 +79,7 @@ export function applyTutorAttempt({
   correct,
   activityType,
   selectedItemId,
+  correctAnswersToKnown = DEFAULT_CORRECT_ANSWERS_TO_KNOWN,
   now = new Date(),
 }: TutorAttemptInput): UserStudyProgress {
   const timestamp = now.toISOString();
@@ -85,7 +104,8 @@ export function applyTutorAttempt({
 
   return {
     ...nextProgress,
-    masteryStage: resolveTutorMasteryStage(nextProgress),
+    status: resolveCalculatedStatus(nextProgress, correctAnswersToKnown),
+    masteryStage: resolveTutorMasteryStage(nextProgress, correctAnswersToKnown),
   };
 }
 
@@ -139,9 +159,16 @@ export function buildTutorFeedback({
   };
 }
 
-export function getAdaptiveReviewQueue(progressRows: UserStudyProgress[]): UserStudyProgress[] {
+function isKnown(row: UserStudyProgress, correctAnswersToKnown: number): boolean {
+  return row.correctCount >= correctAnswersToKnown;
+}
+
+export function getAdaptiveReviewQueue(
+  progressRows: UserStudyProgress[],
+  correctAnswersToKnown = DEFAULT_CORRECT_ANSWERS_TO_KNOWN,
+): UserStudyProgress[] {
   return progressRows
-    .filter((row) => !row.excludedFromLessons && row.status !== "known")
+    .filter((row) => !row.excludedFromLessons && !isKnown(row, correctAnswersToKnown))
     .sort((a, b) => {
       const aMissedRecently = a.lastAnsweredCorrect === false ? 1 : 0;
       const bMissedRecently = b.lastAnsweredCorrect === false ? 1 : 0;

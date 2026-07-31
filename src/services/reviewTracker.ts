@@ -40,11 +40,12 @@ export class ReviewTracker {
       correct,
       activityType: "recall_choice",
       selectedItemId,
+      correctAnswersToKnown,
       now,
     });
   }
 
-  getQueue(progressRows: UserStudyProgress[]): UserStudyProgress[] {
-    return getAdaptiveReviewQueue(progressRows);
+  getQueue(progressRows: UserStudyProgress[], correctAnswersToKnown = KNOWN_CORRECT_THRESHOLD): UserStudyProgress[] {
+    return getAdaptiveReviewQueue(progressRows, correctAnswersToKnown);
   }
 }

@@ -11,14 +11,23 @@ import { katakanaLessons } from "./data/seed/katakanaLessonCatalog";
 import { katakanaPool } from "./data/seed/katakanaSet";
 import { seedLessons, type SeedLesson } from "./data/seed/lessonCatalog";
 import { sumoTerms, type SumoTerm } from "./data/seed/sumoTerms";
-import { getContextExamplesForItems, writingSystemIntro, type TutorContextExample } from "./data/seed/tutorContent";
+import {
+  furiganaExamples,
+  getContextExamplesForItems,
+  kanaLore,
+  kanjiLore,
+  onlineLearningResources,
+  writingSystemIntro,
+  type TutorContextExample,
+} from "./data/seed/tutorContent";
 import { createProgressRepository } from "./repositories/progressRepositoryFactory";
 import type { ProgressRepository } from "./repositories/progressRepository";
 import { KNOWN_CORRECT_THRESHOLD, ReviewTracker, resolveStudyStatus } from "./services/reviewTracker";
 import { applyTutorAttempt, buildTutorFeedback, type TutorFeedback } from "./services/tutorEngine";
 import type { QuizAttempt, QuizType, StudyItem, StudyTrack, TutorActivityType, UserStudyProgress } from "./types";
 
-type Screen = "dashboard" | "lesson" | "quiz" | "context" | "summary" | "dictionary" | "progress" | "settings" | "sumo";
+type Screen = "dashboard" | "baseStudy" | "lesson" | "quiz" | "context" | "summary" | "dictionary" | "progress" | "settings" | "sumo";
+type MountSelection = "base" | StudyTrack;
 
 type QuizMode = "multiple_choice" | "matching" | "concentration";
 
@@ -72,14 +81,6 @@ interface KnownEvent {
   itemId: string;
   track: StudyTrack;
   timestamp: number;
-}
-
-interface BeginnerTrailStep {
-  id: string;
-  title: string;
-  detail: string;
-  track?: StudyTrack;
-  status: "recommended" | "available" | "complete";
 }
 
 interface MatchingFeedback {
@@ -141,6 +142,34 @@ const DEFAULT_LESSON_CURSORS: LessonCursorState = {
   hiragana: 0,
   katakana: 0,
 };
+
+const baseCampStudies = [
+  {
+    id: "base_intro_001",
+    title: "Intro 1: How Japanese Writing Works",
+    focus: "Hiragana, Katakana, and Kanji work together",
+  },
+  {
+    id: "base_intro_002",
+    title: "Intro 2: Kanji Lore",
+    focus: "Where kanji came from and how Japan adapted Chinese characters",
+  },
+  {
+    id: "base_intro_003",
+    title: "Intro 3: Kana Lore",
+    focus: "How Hiragana and Katakana developed from kanji sounds",
+  },
+  {
+    id: "base_intro_004",
+    title: "Intro 4: Furigana",
+    focus: "Small kana that show how to pronounce kanji",
+  },
+  {
+    id: "base_intro_005",
+    title: "Intro 5: Online References",
+    focus: "Useful outside resources for dictionaries, kana, grammar, and reading",
+  },
+];
 
 const reviewTracker = new ReviewTracker();
 const STUDY_TRACK_ORDER: StudyTrack[] = ["hiragana", "katakana", "kanji"];
@@ -382,6 +411,10 @@ function accuracyPercent(row: UserStudyProgress): number {
   return Math.round((row.correctCount / total) * 100);
 }
 
+function getProgressStatus(row: UserStudyProgress | undefined, correctAnswersToKnown: number) {
+  return resolveStudyStatus(row?.correctCount ?? 0, row?.incorrectCount ?? 0, correctAnswersToKnown);
+}
+
 function buildQuizQuestions(items: StudyItem[], pool: StudyItem[]): QuizQuestion[] {
   return shuffle(items).map((item) => {
     const distractors = shuffle(pool.filter((candidate) => candidate.id !== item.id))
@@ -491,10 +524,17 @@ function buildQuestionsForMode(items: StudyItem[], pool: StudyItem[], quizMode: 
   return buildQuizQuestions(items, pool);
 }
 
-function buildMountProgress(track: StudyTrack, progressByItem: Record<string, UserStudyProgress>): MountProgress {
+function buildMountProgress(
+  track: StudyTrack,
+  progressByItem: Record<string, UserStudyProgress>,
+  correctAnswersToKnown: number,
+): MountProgress {
   const pool = trackConfigs[track].pool;
   const totalSteps = pool.length;
-  const knownCount = pool.reduce((count, item) => count + ((progressByItem[item.id]?.status === "known" ? 1 : 0)), 0);
+  const knownCount = pool.reduce(
+    (count, item) => count + (getProgressStatus(progressByItem[item.id], correctAnswersToKnown) === "known" ? 1 : 0),
+    0,
+  );
 
   return {
     track,
@@ -506,115 +546,29 @@ function buildMountProgress(track: StudyTrack, progressByItem: Record<string, Us
   };
 }
 
-function recomputeProgressStatuses(
-  progressByItem: Record<string, UserStudyProgress>,
-  correctAnswersToKnown: number,
-): Record<string, UserStudyProgress> {
-  return Object.fromEntries(
-    Object.entries(progressByItem).map(([itemId, row]) => {
-      const status = resolveStudyStatus(row.correctCount, row.incorrectCount, correctAnswersToKnown);
-      return [
-        itemId,
-        {
-          ...row,
-          status,
-          masteryStage: status === "known" ? "spaced_review" : row.masteryStage === "spaced_review" ? "read_sentences" : row.masteryStage,
-        },
-      ];
-    }),
-  );
-}
-
-function buildBeginnerTrailSteps(progressByItem: Record<string, UserStudyProgress>): BeginnerTrailStep[] {
-  const coreHiraganaIds = new Set(hiraganaLessons.slice(0, 10).flatMap((lesson) => lesson.itemIds));
-  const coreKatakanaIds = new Set(katakanaLessons.slice(0, 10).flatMap((lesson) => lesson.itemIds));
-  const starterKanjiIds = new Set(seedLessons.slice(0, 4).flatMap((lesson) => lesson.itemIds));
-
-  const countKnown = (itemIds: Set<string>) =>
-    Array.from(itemIds).filter((itemId) => progressByItem[itemId]?.status === "known").length;
-  const statusFor = (known: number, total: number, priorComplete: boolean): BeginnerTrailStep["status"] => {
-    if (total > 0 && known >= total) {
-      return "complete";
-    }
-    return priorComplete ? "recommended" : "available";
-  };
-
-  const hiraganaKnown = countKnown(coreHiraganaIds);
-  const katakanaKnown = countKnown(coreKatakanaIds);
-  const kanjiKnown = countKnown(starterKanjiIds);
-  const hiraganaComplete = hiraganaKnown >= coreHiraganaIds.size;
-  const katakanaComplete = katakanaKnown >= coreKatakanaIds.size;
-  const kanjiComplete = kanjiKnown >= starterKanjiIds.size;
-
-  return [
-    {
-      id: "writing-basics",
-      title: writingSystemIntro.title,
-      detail: "Understand why Hiragana, Katakana, and Kanji appear together.",
-      status: "recommended",
-    },
-    {
-      id: "hiragana-core",
-      title: "Hiragana Camps",
-      detail: `${hiraganaKnown}/${coreHiraganaIds.size} core hiragana known`,
-      track: "hiragana",
-      status: statusFor(hiraganaKnown, coreHiraganaIds.size, true),
-    },
-    {
-      id: "katakana-core",
-      title: "Katakana Camps",
-      detail: `${katakanaKnown}/${coreKatakanaIds.size} core katakana known`,
-      track: "katakana",
-      status: statusFor(katakanaKnown, coreKatakanaIds.size, hiraganaComplete),
-    },
-    {
-      id: "starter-kanji",
-      title: "Starter Kanji Ridge",
-      detail: `${kanjiKnown}/${starterKanjiIds.size} starter kanji known`,
-      track: "kanji",
-      status: statusFor(kanjiKnown, starterKanjiIds.size, hiraganaComplete && katakanaComplete),
-    },
-    {
-      id: "real-reading",
-      title: "Read Real Japanese",
-      detail: "Practice words and short phrases with highlighted symbols.",
-      status: kanjiComplete ? "recommended" : "available",
-    },
-  ];
-}
-
-function pickTutorNote(progressRows: UserStudyProgress[], pool: StudyItem[], currentLessonTitle: string): string {
-  const itemByCurrentId = new Map(pool.map((item) => [item.id, item]));
-  const confused = progressRows
-    .filter((row) => itemByCurrentId.has(row.itemId) && row.confusionHistory.length > 0)
-    .sort((a, b) => {
-      const aConfusions = a.confusionHistory.reduce((sum, entry) => sum + entry.count, 0);
-      const bConfusions = b.confusionHistory.reduce((sum, entry) => sum + entry.count, 0);
-      return bConfusions - aConfusions;
-    })[0];
-
-  if (confused) {
-    const item = itemByCurrentId.get(confused.itemId);
-    const topConfusion = [...confused.confusionHistory].sort((a, b) => b.count - a.count)[0];
-    const confusedWith = topConfusion ? itemById.get(topConfusion.confusedWithItemId) : null;
-    if (item && confusedWith) {
-      return `Tutor note: you are mixing up ${item.character} and ${confusedWith.character}. Expect extra recognition practice.`;
-    }
-  }
-
-  const readingWeakness = progressRows
-    .map((row) => ({ row, item: itemByCurrentId.get(row.itemId) }))
-    .find(({ row, item }) => item && row.correctCount >= 3 && row.masteryStage === "read_words");
-  if (readingWeakness?.item) {
-    return `Tutor note: you recognize ${readingWeakness.item.character}. Next we will place it inside real words.`;
-  }
-
-  return `Tutor note: your next best step is ${currentLessonTitle}.`;
-}
-
 function highlightContextText(example: TutorContextExample, items: StudyItem[]): string[] {
   const targets = new Set(items.filter((item) => example.targetItemIds.includes(item.id)).map((item) => item.character));
   return Array.from(example.written).map((character) => (targets.has(character) ? `[${character}]` : character));
+}
+
+function introSegmentClass(text: string): string {
+  switch (text) {
+    case "私":
+    case "I":
+      return "bg-blue-900 text-white ring-blue-950";
+    case "食":
+    case "べます":
+    case "eat":
+      return "bg-emerald-900 text-white ring-emerald-950";
+    case "ラーメン":
+    case "ramen":
+      return "bg-violet-900 text-white ring-violet-950";
+    case "は":
+    case "を":
+      return "bg-slate-800 text-white ring-slate-950";
+    default:
+      return "bg-slate-100 text-slate-950 ring-slate-300";
+  }
 }
 
 function interpolateTrailPoint(progressRatio: number): { x: number; y: number } {
@@ -739,6 +693,8 @@ function MountProgressCard({
 function App() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const [screen, setScreen] = useState<Screen>("dashboard");
+  const [activeMount, setActiveMount] = useState<MountSelection>("base");
+  const [baseStudyIndex, setBaseStudyIndex] = useState(0);
   const [activeTrack, setActiveTrack] = useState<StudyTrack>("hiragana");
   const [lessonIndex, setLessonIndex] = useState(0);
   const [quizIndex, setQuizIndex] = useState(0);
@@ -809,6 +765,10 @@ function App() {
   });
 
   const currentTrackConfig = trackConfigs[activeTrack];
+  const isBaseMount = activeMount === "base";
+  const selectedBaseStudy = baseCampStudies[baseStudyIndex] ?? baseCampStudies[0];
+  const dashboardTitle = isBaseMount ? "Base Camp" : currentTrackConfig.dashboardTitle;
+  const dashboardSubtitle = isBaseMount ? "Start with how Japanese writing systems fit together" : currentTrackConfig.dashboardSubtitle;
   const currentPool = currentTrackConfig.pool;
   const currentLessons = currentTrackConfig.lessons;
   const isKanaTrack = activeTrack === "hiragana" || activeTrack === "katakana";
@@ -855,14 +815,6 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!isProgressHydrated) {
-      return;
-    }
-
-    setProgressByItem((previous) => recomputeProgressStatuses(previous, settings.correctAnswersToKnown));
-  }, [isProgressHydrated, settings.correctAnswersToKnown]);
-
-  useEffect(() => {
     if (!progressRepository || !isProgressHydrated) {
       return;
     }
@@ -896,11 +848,11 @@ function App() {
   const mountProgressByTrack = useMemo(
     () =>
       ({
-        kanji: buildMountProgress("kanji", progressByItem),
-        hiragana: buildMountProgress("hiragana", progressByItem),
-        katakana: buildMountProgress("katakana", progressByItem),
+        kanji: buildMountProgress("kanji", progressByItem, settings.correctAnswersToKnown),
+        hiragana: buildMountProgress("hiragana", progressByItem, settings.correctAnswersToKnown),
+        katakana: buildMountProgress("katakana", progressByItem, settings.correctAnswersToKnown),
       }) satisfies Record<StudyTrack, MountProgress>,
-    [progressByItem],
+    [progressByItem, settings.correctAnswersToKnown],
   );
 
   const activeMountProgress = mountProgressByTrack[activeTrack];
@@ -911,8 +863,8 @@ function App() {
   );
 
   const currentPendingItems = useMemo(
-    () => currentTrailItems.filter((item) => (progressByItem[item.id]?.status ?? "new") !== "known"),
-    [currentTrailItems, progressByItem],
+    () => currentTrailItems.filter((item) => getProgressStatus(progressByItem[item.id], settings.correctAnswersToKnown) !== "known"),
+    [currentTrailItems, progressByItem, settings.correctAnswersToKnown],
   );
 
   const currentLessonEligibleItems = useMemo(
@@ -927,7 +879,7 @@ function App() {
   const currentQuestion = quizQuestions[quizIndex];
   const currentContextExample = contextExamples[contextIndex];
   const currentLessonKnownCount =
-    currentLessonDefinition?.itemIds.filter((itemId) => progressByItem[itemId]?.status === "known").length ?? 0;
+    currentLessonDefinition?.itemIds.filter((itemId) => getProgressStatus(progressByItem[itemId], settings.correctAnswersToKnown) === "known").length ?? 0;
   const currentLessonTotalCount = currentLessonDefinition?.itemIds.length ?? 0;
 
   const trackAttempts = useMemo(
@@ -943,7 +895,7 @@ function App() {
     const activeIds = new Set(currentTrailItems.map((item) => item.id));
     const activeRows = Object.values(progressByItem).filter((row) => activeIds.has(row.itemId));
     const studied = activeRows.filter((row) => row.correctCount + row.incorrectCount > 0).length;
-    const known = activeRows.filter((row) => row.status === "known").length;
+    const known = activeRows.filter((row) => getProgressStatus(row, settings.correctAnswersToKnown) === "known").length;
     const totalCorrect = activeRows.reduce((sum, row) => sum + row.correctCount, 0);
     const totalAttempts = activeRows.reduce((sum, row) => sum + row.correctCount + row.incorrectCount, 0);
     const accuracy = totalAttempts > 0 ? Math.round((totalCorrect / totalAttempts) * 100) : 0;
@@ -957,7 +909,7 @@ function App() {
       currentStreak: streaks.currentStreak,
       longestStreak: streaks.longestStreak,
     };
-  }, [currentTrailItems, progressByItem, trackAttempts]);
+  }, [currentTrailItems, progressByItem, settings.correctAnswersToKnown, trackAttempts]);
 
   const weakItems = useMemo(() => {
     const currentIds = new Set(currentPool.map((item) => item.id));
@@ -980,12 +932,6 @@ function App() {
   }, [currentPool, progressByItem]);
 
   const recentAttempts = trackAttempts.slice(0, 5);
-  const beginnerTrailSteps = useMemo(() => buildBeginnerTrailSteps(progressByItem), [progressByItem]);
-  const tutorNote = useMemo(
-    () => pickTutorNote(Object.values(progressByItem), currentPool, currentLessonDefinition?.title ?? "the next trail segment"),
-    [currentLessonDefinition?.title, currentPool, progressByItem],
-  );
-
   const availableRadicals = useMemo(() => {
     if (activeTrack !== "kanji") {
       return [];
@@ -1033,6 +979,9 @@ function App() {
   const selectedDictionaryProgress = selectedDictionaryItem
     ? progressByItem[selectedDictionaryItem.id] ?? createDefaultProgress(selectedDictionaryItem.id)
     : null;
+  const selectedDictionaryStatus = selectedDictionaryProgress
+    ? getProgressStatus(selectedDictionaryProgress, settings.correctAnswersToKnown)
+    : "new";
 
   const filteredSumoTerms = useMemo(() => {
     const query = sumoQuery.trim().toLowerCase();
@@ -1064,16 +1013,17 @@ function App() {
         .map((itemId) => itemById.get(itemId))
         .filter((item): item is StudyItem => Boolean(item))
         .filter((item) => !(progressByItem[item.id]?.excludedFromLessons ?? false))
-        .filter((item) => settings.includeKnownInLessons || (progressByItem[item.id]?.status ?? "new") !== "known") ?? [];
+        .filter((item) => settings.includeKnownInLessons || getProgressStatus(progressByItem[item.id], settings.correctAnswersToKnown) !== "known") ?? [];
 
     const revisitRows = reviewTracker
       .getQueue(
         currentTrailItems
           .filter((item) => {
             const progress = progressByItem[item.id] ?? createDefaultProgress(item.id);
-            return progress.correctCount + progress.incorrectCount > 0 && progress.status !== "known";
+            return progress.correctCount + progress.incorrectCount > 0 && getProgressStatus(progress, settings.correctAnswersToKnown) !== "known";
           })
           .map((item) => progressByItem[item.id] ?? createDefaultProgress(item.id)),
+        settings.correctAnswersToKnown,
       )
       .slice(0, Math.max(REVISIT_INSERTS, baseLessonItems.length === 0 ? 5 : REVISIT_INSERTS));
 
@@ -1130,7 +1080,29 @@ function App() {
   }
 
   function switchTrack(track: StudyTrack) {
+    setActiveMount(track);
     setActiveTrack(track);
+    setScreen("dashboard");
+    setLessonIndex(0);
+    setQuizIndex(0);
+    setContextIndex(0);
+    setQuizScore(0);
+    setDashboardMessage("");
+    setAnswerFeedback(null);
+    setMatchingFeedback({ tone: "idle", message: "" });
+    setConcentrationFeedback({ tone: "idle", message: "" });
+    setSelectedMatchingItemId(null);
+    setMatchedItemIds([]);
+    setIncorrectMatchItemIds([]);
+    setFlippedCardIds([]);
+    setConcentrationMatchedItemIds([]);
+    setIsResolvingConcentrationTurn(false);
+    setSessionMissedItemIds([]);
+    setKnownEvent(null);
+  }
+
+  function switchToBaseCamp() {
+    setActiveMount("base");
     setScreen("dashboard");
     setLessonIndex(0);
     setQuizIndex(0);
@@ -1214,6 +1186,16 @@ function App() {
     setQuizQuestions(buildQuestionsForMode(preparedLessonSegment, currentLessonEligibleItems, settings.quizMode));
   }
 
+  function startSelectedStudy() {
+    if (isBaseMount) {
+      setScreen("baseStudy");
+      setDashboardMessage("");
+      return;
+    }
+
+    startLesson();
+  }
+
   function recordTutorActivity(itemId: string, activityType: TutorActivityType, isCorrect = true, selectedItemId?: string | null) {
     setProgressByItem((previous) => {
       const currentProgress = previous[itemId] ?? createDefaultProgress(itemId);
@@ -1224,6 +1206,7 @@ function App() {
           correct: isCorrect,
           activityType,
           selectedItemId,
+          correctAnswersToKnown: settings.correctAnswersToKnown,
         }),
       };
     });
@@ -1246,7 +1229,9 @@ function App() {
       selectedItemId,
       settings.correctAnswersToKnown,
     );
-    const becameKnown = currentProgress.status !== "known" && updatedProgress.status === "known";
+    const previousStatus = getProgressStatus(currentProgress, settings.correctAnswersToKnown);
+    const nextStatus = getProgressStatus(updatedProgress, settings.correctAnswersToKnown);
+    const becameKnown = previousStatus !== "known" && nextStatus === "known";
 
     setQuizAttempts((existing) => [attempt, ...existing].slice(0, 1000));
     setProgressByItem((previous) => ({
@@ -1508,14 +1493,19 @@ function App() {
     setIsResolvingConcentrationTurn(false);
   }
 
-  const overviewStats = [
-    { label: "Known", value: activeMountProgress.knownCount, tone: "border-emerald-200 bg-emerald-50 text-emerald-900" },
-    { label: "Remaining", value: activeMountProgress.remainingCount, tone: "border-amber-200 bg-amber-50 text-amber-900" },
-    { label: "Attempts", value: overallStats.attempts, tone: "border-cyan-200 bg-cyan-50 text-cyan-900" },
-    { label: "Accuracy", value: `${overallStats.accuracy}%`, tone: "border-violet-200 bg-violet-50 text-violet-900" },
-  ];
+  const overviewStats = isBaseMount
+    ? [
+        { label: "Studies", value: baseCampStudies.length, tone: "border-cyan-200 bg-cyan-50 text-cyan-900" },
+        { label: "Questions", value: 0, tone: "border-amber-200 bg-amber-50 text-amber-900" },
+        { label: "Wrong Answers", value: 0, tone: "border-violet-200 bg-violet-50 text-violet-900" },
+      ]
+    : [
+        { label: "Known", value: activeMountProgress.knownCount, tone: "border-emerald-200 bg-emerald-50 text-emerald-900" },
+        { label: "Remaining", value: activeMountProgress.remainingCount, tone: "border-amber-200 bg-amber-50 text-amber-900" },
+        { label: "Attempts", value: overallStats.attempts, tone: "border-cyan-200 bg-cyan-50 text-cyan-900" },
+        { label: "Accuracy", value: `${overallStats.accuracy}%`, tone: "border-violet-200 bg-violet-50 text-violet-900" },
+      ];
 
-  const activeRouteStepId = activeTrack === "hiragana" ? "hiragana-core" : activeTrack === "katakana" ? "katakana-core" : "starter-kanji";
   const knownEventItem = knownEvent ? itemById.get(knownEvent.itemId) : null;
 
   return (
@@ -1529,9 +1519,9 @@ function App() {
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-700">Mount Kanji</p>
-                <span className="text-xs text-slate-500">{currentTrackConfig.dashboardSubtitle}</span>
+                <span className="text-xs text-slate-500">{dashboardSubtitle}</span>
               </div>
-              <h1 className="mt-1 text-2xl font-bold leading-tight text-slate-900 sm:text-3xl">{currentTrackConfig.dashboardTitle}</h1>
+              <h1 className="mt-1 text-2xl font-bold leading-tight text-slate-900 sm:text-3xl">{dashboardTitle}</h1>
             </div>
 
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:min-w-[25rem]">
@@ -1547,69 +1537,31 @@ function App() {
 
         {screen === "dashboard" && (
           <section className="rounded-2xl border border-white/70 bg-white/80 p-3 shadow-lg backdrop-blur">
-            <div className="mb-3 grid gap-3 lg:grid-cols-[minmax(0,1.5fr)_minmax(20rem,0.8fr)]">
-              <article className="rounded-xl border border-cyan-100 bg-white p-3 shadow-sm">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-cyan-700">Learning Path</p>
-                    <h2 className="mt-1 text-lg font-bold text-slate-900">Where You Are</h2>
-                  </div>
-                  <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">Progress map</span>
-                </div>
-                <div className="mt-3 grid gap-2 md:grid-cols-5">
-                  {beginnerTrailSteps.map((step, index) => {
-                    const isCurrent = step.id === activeRouteStepId;
-                    return (
-                    <div
-                      key={step.id}
-                      className={`rounded-xl border px-3 py-3 text-left ${
-                        isCurrent
-                          ? "border-cyan-500 bg-cyan-50 text-cyan-950 ring-2 ring-cyan-100"
-                          : step.status === "complete"
-                          ? "border-emerald-200 bg-emerald-50 text-emerald-950"
-                          : "border-slate-200 bg-slate-50 text-slate-800"
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Camp {index}</p>
-                        {isCurrent && <span className="rounded-full bg-cyan-700 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">Current</span>}
-                        {!isCurrent && step.status === "recommended" && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-900">Recommended</span>}
-                        {step.status === "complete" && <span className="rounded-full bg-emerald-700 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">Done</span>}
-                      </div>
-                      <p className="mt-1 text-sm font-bold leading-tight">{step.title}</p>
-                      <p className="mt-1 text-xs leading-snug">{step.detail}</p>
-                    </div>
-                  )})}
-                </div>
-              </article>
-
-              <article className="rounded-xl border border-emerald-100 bg-white p-3 shadow-sm">
-                <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Tutor Notes</p>
-                <p className="mt-2 text-sm font-semibold text-slate-900">{tutorNote}</p>
-                <div className="mt-3 rounded-lg bg-slate-50 p-3">
-                  <p className="text-sm font-semibold text-slate-900">{writingSystemIntro.sentence}</p>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {writingSystemIntro.labels.map((label) => (
-                      <span key={`${label.text}-${label.role}`} className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-200">
-                        {label.text}: {label.script}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              </article>
-            </div>
             <div className="grid gap-3 xl:grid-cols-[18rem_minmax(0,1fr)]">
               <article className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
                 <h2 className="text-sm font-semibold text-slate-900">Choose Mount</h2>
-                <p className="mt-1 text-xs text-slate-600">Pick the writing system you want to study.</p>
+                <p className="mt-1 text-xs text-slate-600">Pick the type of study.</p>
                 <div className="mt-3 space-y-2">
+                  <button
+                    type="button"
+                    onClick={switchToBaseCamp}
+                    className={`w-full rounded-xl border px-3 py-3 text-left transition ${
+                      isBaseMount
+                        ? "border-cyan-600 bg-cyan-50 text-cyan-950"
+                        : "border-slate-200 bg-slate-50 text-slate-900 hover:border-cyan-400 hover:bg-cyan-50"
+                    }`}
+                  >
+                    <p className="text-sm font-semibold">Base Camp</p>
+                    <p className="mt-1 text-xs text-slate-600">Introductory explanations before memorization</p>
+                    <p className="mt-2 text-xs font-semibold text-slate-800">{baseCampStudies.length} study available</p>
+                  </button>
                   {STUDY_TRACK_ORDER.map((track) => (
                     <button
                       key={track}
                       type="button"
                       onClick={() => switchTrack(track)}
                       className={`w-full rounded-xl border px-3 py-3 text-left transition ${
-                        activeTrack === track
+                        activeMount === track
                           ? "border-cyan-600 bg-cyan-50 text-cyan-950"
                           : "border-slate-200 bg-slate-50 text-slate-900 hover:border-cyan-400 hover:bg-cyan-50"
                       }`}
@@ -1628,51 +1580,87 @@ function App() {
                 <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
-                      <h2 className="text-lg font-bold text-slate-900">Current Study</h2>
+                      <h2 className="text-lg font-bold text-slate-900">Choose Study</h2>
                       <p className="text-sm text-slate-600">
-                        {currentTrackConfig.label} - {currentLessonDefinition?.title ?? "Trail Lesson"}
+                        {isBaseMount ? `Base Camp - ${selectedBaseStudy.title}` : `${currentTrackConfig.label} - ${currentLessonDefinition?.title ?? "Trail Lesson"}`}
                       </p>
                     </div>
-                    <p className="mt-1 text-sm text-slate-600">
-                      Selected camp {currentLessonCursor + 1} of {trailLessonCount}: {currentLessonKnownCount}/{currentLessonTotalCount} known
-                    </p>
+                    {isBaseMount ? (
+                      <p className="mt-1 text-sm text-slate-600">Intro studies have no wrong answers. They explain what you are about to learn.</p>
+                    ) : (
+                      <p className="mt-1 text-sm text-slate-600">
+                        Selected study {currentLessonCursor + 1} of {trailLessonCount}: {currentLessonKnownCount}/{currentLessonTotalCount} known
+                      </p>
+                    )}
                     {dashboardMessage && <p className="mt-2 text-sm font-semibold text-emerald-800">{dashboardMessage}</p>}
                   </div>
 
                   <div className="grid w-full gap-2 sm:grid-cols-2 xl:w-auto xl:grid-cols-3">
-                    <button type="button" onClick={startLesson} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
-                      Start Selected Camp ({SESSION_TARGET_MINUTES} min)
+                    <button type="button" onClick={startSelectedStudy} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
+                      {isBaseMount ? `Start ${selectedBaseStudy.title.split(":")[0]}` : `Start Selected Study (${SESSION_TARGET_MINUTES} min)`}
                     </button>
-                    <button type="button" onClick={() => setScreen("dictionary")} className="rounded-xl border border-cyan-700 bg-cyan-50 px-4 py-2 text-sm font-semibold text-cyan-900 transition hover:bg-cyan-100">
-                      {activeTrack === "kanji" ? "Dictionary" : "Reference Chart"}
-                    </button>
-                    <button type="button" onClick={() => setScreen("progress")} className="rounded-xl border border-emerald-700 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-900 transition hover:bg-emerald-100">
-                      Progress
-                    </button>
+                    {!isBaseMount && (
+                      <button type="button" onClick={() => setScreen("dictionary")} className="rounded-xl border border-cyan-700 bg-cyan-50 px-4 py-2 text-sm font-semibold text-cyan-900 transition hover:bg-cyan-100">
+                        {activeTrack === "kanji" ? "Dictionary" : "Reference Chart"}
+                      </button>
+                    )}
+                    {!isBaseMount && (
+                      <button type="button" onClick={() => setScreen("progress")} className="rounded-xl border border-emerald-700 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-900 transition hover:bg-emerald-100">
+                        Progress
+                      </button>
+                    )}
                     <button type="button" onClick={() => setScreen("settings")} className="rounded-xl border border-violet-700 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-900 transition hover:bg-violet-100">
                       Settings
                     </button>
-                    <button type="button" onClick={() => setScreen("sumo")} className="rounded-xl border border-amber-700 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-900 transition hover:bg-amber-100">
-                      Sumo Terms
-                    </button>
+                    {!isBaseMount && (
+                      <button type="button" onClick={() => setScreen("sumo")} className="rounded-xl border border-amber-700 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-900 transition hover:bg-amber-100">
+                        Sumo Terms
+                      </button>
+                    )}
                   </div>
                 </div>
 
                 <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
-                      <h3 className="text-sm font-semibold text-slate-900">Choose Camp</h3>
+                      <h3 className="text-sm font-semibold text-slate-900">Choose Study</h3>
                       <p className="mt-1 text-xs text-slate-600">
-                        Camps group similar sounds or related symbols. Pick one, then start the selected camp.
+                        {isBaseMount
+                          ? "Start with explanations, then move into Hiragana when ready."
+                          : "Studies group similar sounds or related symbols. Pick one, then start the selected study."}
                       </p>
                     </div>
                     <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-200">
-                      {currentTrackConfig.unitPlural}
+                      {isBaseMount ? "intro" : currentTrackConfig.unitPlural}
                     </span>
                   </div>
                   <div className="mt-3 grid max-h-80 gap-2 overflow-y-auto pr-1 sm:grid-cols-2 xl:grid-cols-3">
-                    {currentLessons.map((lesson, index) => {
-                      const lessonKnown = lesson.itemIds.filter((itemId) => progressByItem[itemId]?.status === "known").length;
+                    {isBaseMount ? (
+                      baseCampStudies.map((study, index) => {
+                        const isSelected = index === baseStudyIndex;
+                        return (
+                        <button
+                          key={study.id}
+                          type="button"
+                          onClick={() => setBaseStudyIndex(index)}
+                          className={`rounded-xl border px-3 py-3 text-left transition ${
+                            isSelected
+                              ? "border-cyan-600 bg-cyan-50 text-cyan-950 ring-2 ring-cyan-100"
+                              : "border-slate-200 bg-white text-slate-900 hover:border-cyan-300 hover:bg-cyan-50"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Intro {index + 1}</p>
+                              <p className="mt-1 text-sm font-bold leading-tight">{study.title}</p>
+                              <p className="mt-1 text-xs text-slate-600">{study.focus}</p>
+                            </div>
+                            {isSelected && <span className="rounded-full bg-cyan-700 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">Selected</span>}
+                          </div>
+                        </button>
+                      )})
+                    ) : currentLessons.map((lesson, index) => {
+                      const lessonKnown = lesson.itemIds.filter((itemId) => getProgressStatus(progressByItem[itemId], settings.correctAnswersToKnown) === "known").length;
                       const isSelected = index === currentLessonCursor;
                       const isComplete = lesson.itemIds.length > 0 && lessonKnown >= lesson.itemIds.length;
                       return (
@@ -1706,7 +1694,7 @@ function App() {
                   </div>
                 </div>
 
-                <div className="mt-3">
+                {!isBaseMount && <div className="mt-3">
                   <article className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
                     <h3 className="text-sm font-semibold text-slate-900">Current Climb</h3>
                     <div className="mt-3">
@@ -1718,9 +1706,9 @@ function App() {
                       />
                     </div>
                   </article>
-                </div>
+                </div>}
 
-                <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                {!isBaseMount && <div className="mt-3 grid gap-3 lg:grid-cols-2">
                   <article className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
                     <h3 className="text-sm font-semibold text-slate-900">Recent Attempts</h3>
                     {recentAttempts.length === 0 && <p className="mt-1 text-sm text-slate-600">No attempts yet.</p>}
@@ -1748,7 +1736,154 @@ function App() {
                       Known symbols leave future quizzes, and every newly known symbol moves you one step closer to the summit.
                     </p>
                   </article>
+                </div>}
+              </div>
+            </div>
+          </section>
+        )}
+
+        {screen === "baseStudy" && (
+          <section className="rounded-3xl border border-white/70 bg-white/85 p-4 shadow-lg backdrop-blur">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-wide text-cyan-800">Base Camp - Intro {baseStudyIndex + 1}</p>
+                <h2 className="mt-1 text-3xl font-bold text-slate-900">{selectedBaseStudy.title}</h2>
+                <p className="mt-2 max-w-3xl text-sm text-slate-700">{selectedBaseStudy.focus}</p>
+              </div>
+              <button
+                type="button"
+                onClick={returnToDashboard}
+                className="rounded-full bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition hover:bg-slate-700"
+              >
+                Back To Choose Study
+              </button>
+            </div>
+
+            {baseStudyIndex === 0 ? (
+              <div className="mt-4 rounded-2xl border border-cyan-100 bg-white p-5">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Example Sentence</p>
+                <p className="mt-3 flex flex-wrap items-center gap-2 text-4xl font-bold leading-tight sm:text-6xl">
+                  {writingSystemIntro.labels.map((label) => (
+                    <span key={`sentence-${label.text}`} className={`rounded-xl px-2 py-1 ring-2 ${introSegmentClass(label.text)}`}>
+                      {label.text}
+                    </span>
+                  ))}
+                </p>
+                <p className="mt-4 flex flex-wrap items-center gap-2 text-2xl font-bold">
+                  {["I", "eat", "ramen"].map((word) => (
+                    <span key={`meaning-${word}`} className={`rounded-lg px-2 py-1 ring-2 ${introSegmentClass(word)}`}>
+                      {word}
+                    </span>
+                  ))}
+                  <span className="text-slate-800">.</span>
+                </p>
+                <p className="mt-2 text-sm font-semibold text-slate-600">
+                  The dark gray Japanese particles mark grammar, so they do not become separate English words here.
+                </p>
+                <p className="mt-3 max-w-3xl text-sm text-slate-700">{writingSystemIntro.purpose}</p>
+                <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  {writingSystemIntro.labels.map((label) => (
+                    <article key={`${label.text}-${label.role}`} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-3xl font-bold text-slate-900">{label.text}</p>
+                        <span
+                          className={`rounded-full px-3 py-1 text-xs font-bold uppercase tracking-wide ${
+                            label.script === "kanji"
+                              ? "bg-emerald-100 text-emerald-900"
+                              : label.script === "katakana"
+                                ? "bg-amber-100 text-amber-900"
+                                : "bg-cyan-100 text-cyan-900"
+                          }`}
+                        >
+                          {label.script}
+                        </span>
+                      </div>
+                      <p className="mt-3 text-sm font-medium text-slate-700">{label.role}</p>
+                    </article>
+                  ))}
                 </div>
+              </div>
+            ) : baseStudyIndex === 3 ? (
+              <div className="mt-4 rounded-2xl border border-cyan-100 bg-white p-5">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Furigana</p>
+                <p className="mt-2 max-w-3xl text-sm text-slate-700">
+                  Furigana are small kana placed above or beside kanji to show pronunciation. They help children, beginners, and readers encountering unfamiliar kanji.
+                </p>
+                <div className="mt-4 grid gap-3 md:grid-cols-3">
+                  {furiganaExamples.map((example) => (
+                    <article key={example.written} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="text-center">
+                        <p className="text-sm font-bold text-cyan-800">{example.furigana}</p>
+                        <p className="text-5xl font-bold text-slate-900">{example.written}</p>
+                      </div>
+                      <p className="mt-3 text-lg font-bold text-slate-900">{example.meaning}</p>
+                      <p className="mt-3 text-sm leading-relaxed text-slate-700">{example.note}</p>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            ) : baseStudyIndex === 4 ? (
+              <div className="mt-4 rounded-2xl border border-cyan-100 bg-white p-5">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Online References</p>
+                <p className="mt-2 max-w-3xl text-sm text-slate-700">
+                  These resources are good companions for Mount Kanji. Use dictionaries when you encounter a word, kana tools for extra script practice, grammar guides when particles or verb forms become confusing, and easy readers after you know enough kana to start reading.
+                </p>
+                <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  {onlineLearningResources.map((resource) => (
+                    <article key={resource.url} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <h3 className="text-lg font-bold text-slate-900">{resource.title}</h3>
+                        <span className="rounded-full bg-cyan-100 px-3 py-1 text-xs font-bold uppercase tracking-wide text-cyan-900">{resource.category}</span>
+                      </div>
+                      <p className="mt-2 text-sm leading-relaxed text-slate-700">{resource.description}</p>
+                      <a
+                        href={resource.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-3 inline-flex rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700"
+                      >
+                        Open Resource
+                      </a>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="mt-4 rounded-2xl border border-cyan-100 bg-white p-5">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  {baseStudyIndex === 1 ? "Kanji Lore" : "Kana Lore"}
+                </p>
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  {(baseStudyIndex === 1 ? kanjiLore : kanaLore).map((section) => (
+                    <article key={section.title} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      <h3 className="text-lg font-bold text-slate-900">{section.title}</h3>
+                      <p className="mt-2 text-sm leading-relaxed text-slate-700">{section.body}</p>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4">
+              <h3 className="text-lg font-bold text-slate-900">What To Study Next</h3>
+              <p className="mt-2 text-sm text-slate-700">
+                Start Mount Hiragana first. Hiragana gives you the basic Japanese sound system, then Katakana helps you read loanwords and names, and Kanji adds meaning-based symbols.
+              </p>
+              <div className="mt-4 flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={() => switchTrack("hiragana")}
+                  className="rounded-full bg-cyan-700 px-5 py-2 text-sm font-semibold text-white transition hover:bg-cyan-600"
+                >
+                  Choose Mount Hiragana
+                </button>
+                <button
+                  type="button"
+                  onClick={returnToDashboard}
+                  className="rounded-full border border-slate-300 bg-white px-5 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-50"
+                >
+                  Stay At Base Camp
+                </button>
               </div>
             </div>
           </section>
@@ -2056,9 +2191,11 @@ function App() {
                   ),
                 )}
               </p>
-              <p className="mt-4 text-xl font-semibold text-slate-800">{currentContextExample.reading}</p>
-              {settings.showRomaji && <p className="mt-1 text-sm font-semibold text-slate-500">{currentContextExample.romaji}</p>}
-              <p className="mt-2 text-sm text-slate-700">{currentContextExample.meaning}</p>
+              <p className="mt-4 text-2xl font-bold text-slate-900">{currentContextExample.meaning}</p>
+              {currentContextExample.reading !== currentContextExample.written && (
+                <p className="mt-2 text-sm font-semibold text-slate-600">Reading: {currentContextExample.reading}</p>
+              )}
+              {settings.showRomaji && <p className="mt-1 text-sm font-semibold text-slate-500">Romaji: {currentContextExample.romaji}</p>}
               <p className="mt-3 text-sm font-semibold text-violet-800">{currentContextExample.explanation}</p>
             </div>
 
@@ -2324,7 +2461,7 @@ function App() {
                     {selectedDictionaryProgress && (
                       <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
                         <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Study Status</p>
-                        <p className="mt-1 text-sm font-semibold capitalize text-slate-900">{selectedDictionaryProgress.status}</p>
+                        <p className="mt-1 text-sm font-semibold capitalize text-slate-900">{selectedDictionaryStatus}</p>
                         <p className="text-xs text-slate-600">
                           Correct answers: {selectedDictionaryProgress.correctCount}/{settings.correctAnswersToKnown}
                         </p>
@@ -2343,14 +2480,14 @@ function App() {
                         <button
                           type="button"
                           onClick={() => markItemKnown(selectedDictionaryItem.id)}
-                          disabled={selectedDictionaryProgress.status === "known"}
+                          disabled={selectedDictionaryStatus === "known"}
                           className={`mt-3 w-full rounded-xl px-3 py-2 text-sm font-semibold transition ${
-                            selectedDictionaryProgress.status === "known"
+                            selectedDictionaryStatus === "known"
                               ? "cursor-not-allowed border border-slate-300 bg-slate-100 text-slate-400"
                               : "border border-cyan-700 bg-cyan-50 text-cyan-900 hover:bg-cyan-100"
                           }`}
                         >
-                          {selectedDictionaryProgress.status === "known" ? "Already Known" : "Mark Known"}
+                          {selectedDictionaryStatus === "known" ? "Already Known" : "Mark Known"}
                         </button>
                       </div>
                     )}

@@ -13,7 +13,28 @@ export interface WritingSystemIntro {
   title: string;
   purpose: string;
   sentence: string;
+  meaning: string;
   labels: ScriptLabel[];
+}
+
+export interface WritingSystemLoreSection {
+  title: string;
+  body: string;
+}
+
+export interface OnlineLearningResource {
+  title: string;
+  url: string;
+  category: string;
+  description: string;
+}
+
+export interface FuriganaExample {
+  written: string;
+  furigana: string;
+  romaji: string;
+  meaning: string;
+  note: string;
 }
 
 export interface TutorContextExample {
@@ -36,15 +57,151 @@ export const writingSystemIntro: WritingSystemIntro = {
   title: "Base Camp: Japanese Writing",
   purpose: "Japanese uses three scripts together. Learning them in order makes real reading less mysterious.",
   sentence: "私はラーメンを食べます",
+  meaning: "I eat ramen.",
   labels: [
     { text: "私", script: "kanji", role: "Kanji carries core meaning: I/me." },
-    { text: "は", script: "hiragana", role: "Hiragana marks grammar." },
+    { text: "は", script: "hiragana", role: "Topic marker: 私は means 'as for me' or simply 'I' here. Written は, pronounced wa." },
     { text: "ラーメン", script: "katakana", role: "Katakana often marks loanwords, names, and emphasis." },
     { text: "を", script: "hiragana", role: "Hiragana marks the object of the sentence." },
     { text: "食", script: "kanji", role: "Kanji carries the meaning: eat." },
     { text: "べます", script: "hiragana", role: "Hiragana completes the word ending and politeness." },
   ],
 };
+
+export const kanjiLore: WritingSystemLoreSection[] = [
+  {
+    title: "Characters From China",
+    body: "Kanji began as Chinese characters brought to Japan through contact with the continent. Japan already had a spoken language, but Chinese writing gave scholars and officials a powerful written system.",
+  },
+  {
+    title: "Adapted To Japanese",
+    body: "Japanese readers adapted characters in two ways: for meaning and for sound. 山 kept a meaning like mountain, but could be read やま in native Japanese words or さん in many compound words.",
+  },
+  {
+    title: "Example: Mountain",
+    body: "山 means mountain. By itself it is often read やま. In 富士山, Mount Fuji, it is read さん. The symbol carries meaning, while the word decides the reading.",
+  },
+  {
+    title: "Example: Eat",
+    body: "食 carries the idea of eating. In 食べます, the kanji gives the core meaning and the kana べます tells you the verb form and pronunciation.",
+  },
+  {
+    title: "Brush, Ink, And Paper",
+    body: "Traditional documents were written with a brush called a fude. Writers used sumi, black ink made from soot and binder, often ground with water on an inkstone before writing on paper.",
+  },
+  {
+    title: "Traditional Documents",
+    body: "Classical Japanese documents were commonly written vertically in columns, read top to bottom, with columns ordered from right to left. Modern Japanese also uses horizontal left-to-right writing, especially on screens.",
+  },
+];
+
+export const kanaLore: WritingSystemLoreSection[] = [
+  {
+    title: "Kana Came From Kanji",
+    body: "Hiragana and Katakana both developed from kanji used for sound. Instead of using a character mainly for meaning, writers used simplified forms to represent Japanese syllables.",
+  },
+  {
+    title: "Hiragana: Flowing Forms",
+    body: "Hiragana grew from cursive, flowing ways of writing whole kanji. Its rounded shapes made it useful for native Japanese words, grammar particles, and verb endings.",
+  },
+  {
+    title: "Katakana: Cut Pieces",
+    body: "Katakana developed from pieces of kanji, often used by monks and scholars as reading marks beside Chinese texts. Its shapes are straighter and more angular.",
+  },
+  {
+    title: "Example: あ",
+    body: "The hiragana あ comes from a cursive form of the kanji 安, used for its sound. Over time the flowing shorthand became a standard kana symbol.",
+  },
+  {
+    title: "Example: カ",
+    body: "The katakana カ comes from part of the kanji 加. Katakana often preserves the feeling of a clipped or abbreviated component.",
+  },
+  {
+    title: "How Kana Is Used Today",
+    body: "Hiragana is used for grammar, word endings, and many native words. Katakana is used for loanwords, foreign names, sound effects, technical terms, and emphasis.",
+  },
+];
+
+export const furiganaExamples: FuriganaExample[] = [
+  {
+    written: "山",
+    furigana: "やま",
+    romaji: "yama",
+    meaning: "mountain",
+    note: "Furigana tells you to read this kanji as やま (yama) when it appears as the word mountain.",
+  },
+  {
+    written: "富士山",
+    furigana: "ふじさん",
+    romaji: "fujisan",
+    meaning: "Mount Fuji",
+    note: "The same 山 is read さん (san) here because it appears inside a compound name.",
+  },
+  {
+    written: "食べます",
+    furigana: "たべます",
+    romaji: "tabemasu",
+    meaning: "eat / will eat",
+    note: "Furigana shows how to pronounce the kanji plus its hiragana ending as たべます (tabemasu), one complete word.",
+  },
+];
+
+export const onlineLearningResources: OnlineLearningResource[] = [
+  {
+    title: "Jisho",
+    url: "https://jisho.org/",
+    category: "Dictionary",
+    description: "Look up Japanese words, kanji, readings, example sentences, radicals, and common usage notes.",
+  },
+  {
+    title: "JapanDict",
+    url: "https://www.japandict.com/",
+    category: "Dictionary",
+    description: "Another searchable Japanese dictionary with English meanings, example sentences, kanji tools, and radical lookup.",
+  },
+  {
+    title: "Japan Foundation Minato",
+    url: "https://minato-jf.jp/",
+    category: "Structured Courses",
+    description: "Free self-study courses from The Japan Foundation, including beginner Japanese and kana-focused courses.",
+  },
+  {
+    title: "Tofugu Learn Japanese",
+    url: "https://www.tofugu.com/learn-japanese/",
+    category: "Beginner Roadmap",
+    description: "A detailed beginner roadmap that explains what to study first and how kana, kanji, vocabulary, and grammar fit together.",
+  },
+  {
+    title: "Tofugu Hiragana Guide",
+    url: "https://www.tofugu.com/japanese/learn-hiragana/",
+    category: "Kana Guide",
+    description: "A focused hiragana guide with mnemonics and practice advice for learning the first kana script.",
+  },
+  {
+    title: "Tofugu Kana Quiz",
+    url: "https://kana-quiz.tofugu.com/",
+    category: "Kana Practice",
+    description: "A free hiragana and katakana quiz tool for drilling main kana, dakuten, and combination sounds.",
+  },
+  {
+    title: "Tae Kim's Guide To Japanese",
+    url: "https://guidetojapanese.org/learn/",
+    category: "Grammar",
+    description: "A free grammar guide that builds Japanese grammar from the ground up and avoids relying only on English phrase matching.",
+  },
+  {
+    title: "NHK News Web Easy",
+    url: "https://www3.nhk.or.jp/news/easy/",
+    category: "Reading Practice",
+    description: "Simplified Japanese news with furigana. Best after you know kana and some beginner grammar.",
+  },
+  {
+    title: "NHK Easier",
+    url: "https://nhkeasier.com/",
+    category: "Reading Practice",
+    description: "A learner-friendly reader for NHK Easy articles with furigana controls and dictionary-style support.",
+  },
+];
 
 const itemIdByCharacter = new Map(
   [...hiraganaPool, ...katakanaPool, ...beginnerKanjiPool].map((item) => [item.character, item.id]),
