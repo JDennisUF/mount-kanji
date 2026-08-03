@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { toRomaji } from "wanakana";
 
 import mountainStatusKanji from "./assets/mount-kanji.svg";
@@ -22,11 +22,12 @@ import {
 } from "./data/seed/tutorContent";
 import { createProgressRepository } from "./repositories/progressRepositoryFactory";
 import type { ProgressRepository } from "./repositories/progressRepository";
+import type { HandwritingStroke } from "./services/handwritingVerifier";
 import { KNOWN_CORRECT_THRESHOLD, ReviewTracker, resolveStudyStatus } from "./services/reviewTracker";
 import { applyTutorAttempt, buildTutorFeedback, type TutorFeedback } from "./services/tutorEngine";
 import type { QuizAttempt, QuizType, StudyItem, StudyTrack, TutorActivityType, UserStudyProgress } from "./types";
 
-type Screen = "dashboard" | "baseStudy" | "lesson" | "quiz" | "context" | "summary" | "dictionary" | "progress" | "settings" | "sumo";
+type Screen = "dashboard" | "baseStudy" | "lesson" | "quiz" | "handwriting" | "context" | "summary" | "dictionary" | "progress" | "settings" | "sumo";
 type MountSelection = "base" | StudyTrack;
 
 type QuizMode = "multiple_choice" | "matching" | "concentration";
@@ -93,6 +94,12 @@ interface ConcentrationFeedback {
   message: string;
 }
 
+interface HandwritingFeedback {
+  tone: "success" | "error" | "idle";
+  message: string;
+  score: number;
+}
+
 type TextScale = 90 | 100 | 110 | 125;
 type SumoCategoryFilter = "all" | SumoTerm["category"];
 
@@ -116,6 +123,9 @@ const REVISIT_INSERTS = 2;
 const MATCHING_BOARD_SIZE = 5;
 const CONCENTRATION_GRID_SIZE = 16;
 const CONCENTRATION_PAIR_COUNT = CONCENTRATION_GRID_SIZE / 2;
+const HANDWRITING_TRAIL_TRACKS = new Set<StudyTrack>(["hiragana", "katakana"]);
+const HANDWRITING_RASTER_SIZE = 256;
+const HANDWRITING_GUIDE_FONT_STACK = `"BIZ UDPGothic", "Hiragino Sans", "Yu Gothic", "Meiryo", sans-serif`;
 const TRAIL_POINTS: Array<{ x: number; y: number }> = [
   { x: 38, y: 92 },
   { x: 52, y: 82 },
@@ -136,6 +146,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   quizMode: "multiple_choice",
   soundEffects: true,
 };
+
+const supportedHandwritingCharacters = new Set([...hiraganaPool, ...katakanaPool].map((item) => item.character));
 
 const DEFAULT_LESSON_CURSORS: LessonCursorState = {
   kanji: 0,
@@ -690,6 +702,182 @@ function MountProgressCard({
   );
 }
 
+function strokeToPath(stroke: HandwritingStroke): string {
+  return stroke
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x * 100} ${point.y * 100}`)
+    .join(" ");
+}
+
+function getMaskBounds(mask: Uint8Array, size: number): { minX: number; minY: number; maxX: number; maxY: number; width: number; height: number } | null {
+  let minX = size;
+  let minY = size;
+  let maxX = -1;
+  let maxY = -1;
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      if (mask[y * size + x] === 0) {
+        continue;
+      }
+
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+    }
+  }
+
+  if (maxX < 0 || maxY < 0) {
+    return null;
+  }
+
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width: maxX - minX,
+    height: maxY - minY,
+  };
+}
+
+function createAlphaMask(context: CanvasRenderingContext2D, size: number): Uint8Array {
+  const image = context.getImageData(0, 0, size, size).data;
+  const mask = new Uint8Array(size * size);
+
+  for (let index = 0; index < mask.length; index += 1) {
+    mask[index] = image[index * 4 + 3] > 24 ? 1 : 0;
+  }
+
+  return mask;
+}
+
+function dilateMask(mask: Uint8Array, size: number, radius: number): Uint8Array {
+  const dilated = new Uint8Array(mask.length);
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      if (mask[y * size + x] === 0) {
+        continue;
+      }
+
+      for (let dy = -radius; dy <= radius; dy += 1) {
+        for (let dx = -radius; dx <= radius; dx += 1) {
+          if (dx * dx + dy * dy > radius * radius) {
+            continue;
+          }
+
+          const nextX = x + dx;
+          const nextY = y + dy;
+          if (nextX >= 0 && nextX < size && nextY >= 0 && nextY < size) {
+            dilated[nextY * size + nextX] = 1;
+          }
+        }
+      }
+    }
+  }
+
+  return dilated;
+}
+
+function createHandwritingCanvas(size = HANDWRITING_RASTER_SIZE): { canvas: HTMLCanvasElement; context: CanvasRenderingContext2D } | null {
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+
+  return context ? { canvas, context } : null;
+}
+
+function drawHandwritingGlyph(context: CanvasRenderingContext2D, character: string, size: number) {
+  context.clearRect(0, 0, size, size);
+  context.fillStyle = "#000";
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.font = `700 ${Math.round(size * 0.72)}px ${HANDWRITING_GUIDE_FONT_STACK}`;
+  context.fillText(character, size / 2, size * 0.56);
+}
+
+function drawHandwritingStrokes(context: CanvasRenderingContext2D, strokes: HandwritingStroke[], size: number) {
+  context.clearRect(0, 0, size, size);
+  context.strokeStyle = "#000";
+  context.lineWidth = size * 0.05;
+  context.lineCap = "round";
+  context.lineJoin = "round";
+
+  for (const stroke of strokes) {
+    if (stroke.length === 0) {
+      continue;
+    }
+
+    context.beginPath();
+    context.moveTo(stroke[0].x * size, stroke[0].y * size);
+    for (const point of stroke.slice(1)) {
+      context.lineTo(point.x * size, point.y * size);
+    }
+    context.stroke();
+  }
+}
+
+function verifyHandwritingAgainstGlyph(character: string, strokes: HandwritingStroke[]): HandwritingFeedback {
+  const pointCount = strokes.flat().length;
+  if (pointCount < 6) {
+    return { tone: "error", message: "Draw the character before checking it.", score: 0 };
+  }
+
+  const userRaster = createHandwritingCanvas();
+  const targetRaster = createHandwritingCanvas();
+  if (!userRaster || !targetRaster) {
+    return { tone: "error", message: "Handwriting verification is not available in this browser.", score: 0 };
+  }
+
+  drawHandwritingStrokes(userRaster.context, strokes, HANDWRITING_RASTER_SIZE);
+  drawHandwritingGlyph(targetRaster.context, character, HANDWRITING_RASTER_SIZE);
+
+  const userMask = createAlphaMask(userRaster.context, HANDWRITING_RASTER_SIZE);
+  const targetMask = createAlphaMask(targetRaster.context, HANDWRITING_RASTER_SIZE);
+  const isSimpleKo = character === "こ";
+  const tolerantTargetMask = dilateMask(targetMask, HANDWRITING_RASTER_SIZE, isSimpleKo ? 18 : 11);
+  const userBounds = getMaskBounds(userMask, HANDWRITING_RASTER_SIZE);
+  const targetBounds = getMaskBounds(targetMask, HANDWRITING_RASTER_SIZE);
+
+  if (!userBounds || !targetBounds) {
+    return { tone: "error", message: "Draw the character before checking it.", score: 0 };
+  }
+
+  const userInk = userMask.reduce((sum, value) => sum + value, 0);
+  let overlappingInk = 0;
+  for (let index = 0; index < userMask.length; index += 1) {
+    if (userMask[index] && tolerantTargetMask[index]) {
+      overlappingInk += 1;
+    }
+  }
+
+  const overlapScore = userInk === 0 ? 0 : overlappingInk / userInk;
+  const userSize = Math.max(userBounds.width, userBounds.height) / HANDWRITING_RASTER_SIZE;
+  const targetSize = Math.max(targetBounds.width, targetBounds.height) / HANDWRITING_RASTER_SIZE;
+  const sizeScore = clamp(1 - Math.abs(userSize - targetSize * 0.72) / 0.36, 0, 1);
+  const userCenter = { x: userBounds.minX + userBounds.width / 2, y: userBounds.minY + userBounds.height / 2 };
+  const targetCenter = { x: targetBounds.minX + targetBounds.width / 2, y: targetBounds.minY + targetBounds.height / 2 };
+  const centerScore = clamp(1 - Math.hypot(userCenter.x - targetCenter.x, userCenter.y - targetCenter.y) / (HANDWRITING_RASTER_SIZE * 0.24), 0, 1);
+  const score = overlapScore * 0.76 + sizeScore * 0.14 + centerScore * 0.1;
+  const acceptanceScore = isSimpleKo ? 0.56 : 0.68;
+
+  if (score >= acceptanceScore) {
+    return { tone: "success", message: `That looks like ${character}.`, score };
+  }
+
+  if (overlapScore < 0.55) {
+    return { tone: "error", message: "Keep your strokes inside the guide shape.", score };
+  }
+
+  if (sizeScore < 0.55) {
+    return { tone: "error", message: "Match the guide size more closely.", score };
+  }
+
+  return { tone: "error", message: "Match the guide position more closely.", score };
+}
+
 function App() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const [screen, setScreen] = useState<Screen>("dashboard");
@@ -698,11 +886,16 @@ function App() {
   const [activeTrack, setActiveTrack] = useState<StudyTrack>("hiragana");
   const [lessonIndex, setLessonIndex] = useState(0);
   const [quizIndex, setQuizIndex] = useState(0);
+  const [handwritingIndex, setHandwritingIndex] = useState(0);
   const [contextIndex, setContextIndex] = useState(0);
   const [quizScore, setQuizScore] = useState(0);
   const [answerFeedback, setAnswerFeedback] = useState<TutorFeedback | null>(null);
   const [matchingFeedback, setMatchingFeedback] = useState<MatchingFeedback>({ tone: "idle", message: "" });
   const [concentrationFeedback, setConcentrationFeedback] = useState<ConcentrationFeedback>({ tone: "idle", message: "" });
+  const [handwritingFeedback, setHandwritingFeedback] = useState<HandwritingFeedback>({ tone: "idle", message: "" , score: 0 });
+  const [handwritingStrokes, setHandwritingStrokes] = useState<HandwritingStroke[]>([]);
+  const [activeHandwritingStroke, setActiveHandwritingStroke] = useState<HandwritingStroke | null>(null);
+  const [showHandwritingGuide, setShowHandwritingGuide] = useState(false);
   const [selectedMatchingItemId, setSelectedMatchingItemId] = useState<string | null>(null);
   const [matchedItemIds, setMatchedItemIds] = useState<string[]>([]);
   const [incorrectMatchItemIds, setIncorrectMatchItemIds] = useState<string[]>([]);
@@ -876,6 +1069,8 @@ function App() {
   const currentLessonCursor = lessonCursorByTrack[activeTrack] % Math.max(1, currentLessons.length);
   const currentLessonDefinition = currentLessons[currentLessonCursor];
   const currentLessonItem = activeLessonItems[lessonIndex];
+  const currentHandwritingItem = activeLessonItems[handwritingIndex];
+  const isCurrentHandwritingSupported = currentHandwritingItem ? supportedHandwritingCharacters.has(currentHandwritingItem.character) : false;
   const currentQuestion = quizQuestions[quizIndex];
   const currentContextExample = contextExamples[contextIndex];
   const currentLessonKnownCount =
@@ -932,6 +1127,8 @@ function App() {
   }, [currentPool, progressByItem]);
 
   const recentAttempts = trackAttempts.slice(0, 5);
+  const sessionUnitTotal = quizQuestions.length > 0 ? totalQuizUnits : activeLessonItems.length;
+  const isHandwritingSessionSummary = quizQuestions.length === 0 && activeLessonItems.length > 0;
   const availableRadicals = useMemo(() => {
     if (activeTrack !== "kanji") {
       return [];
@@ -1085,12 +1282,17 @@ function App() {
     setScreen("dashboard");
     setLessonIndex(0);
     setQuizIndex(0);
+    setHandwritingIndex(0);
     setContextIndex(0);
     setQuizScore(0);
     setDashboardMessage("");
     setAnswerFeedback(null);
     setMatchingFeedback({ tone: "idle", message: "" });
     setConcentrationFeedback({ tone: "idle", message: "" });
+    setHandwritingFeedback({ tone: "idle", message: "", score: 0 });
+    setHandwritingStrokes([]);
+    setActiveHandwritingStroke(null);
+    setShowHandwritingGuide(false);
     setSelectedMatchingItemId(null);
     setMatchedItemIds([]);
     setIncorrectMatchItemIds([]);
@@ -1106,12 +1308,17 @@ function App() {
     setScreen("dashboard");
     setLessonIndex(0);
     setQuizIndex(0);
+    setHandwritingIndex(0);
     setContextIndex(0);
     setQuizScore(0);
     setDashboardMessage("");
     setAnswerFeedback(null);
     setMatchingFeedback({ tone: "idle", message: "" });
     setConcentrationFeedback({ tone: "idle", message: "" });
+    setHandwritingFeedback({ tone: "idle", message: "", score: 0 });
+    setHandwritingStrokes([]);
+    setActiveHandwritingStroke(null);
+    setShowHandwritingGuide(false);
     setSelectedMatchingItemId(null);
     setMatchedItemIds([]);
     setIncorrectMatchItemIds([]);
@@ -1169,12 +1376,17 @@ function App() {
     setScreen("lesson");
     setLessonIndex(0);
     setQuizIndex(0);
+    setHandwritingIndex(0);
     setContextIndex(0);
     setQuizScore(0);
     setSessionMissedItemIds([]);
     setAnswerFeedback(null);
     setMatchingFeedback({ tone: "idle", message: "" });
     setConcentrationFeedback({ tone: "idle", message: "" });
+    setHandwritingFeedback({ tone: "idle", message: "", score: 0 });
+    setHandwritingStrokes([]);
+    setActiveHandwritingStroke(null);
+    setShowHandwritingGuide(false);
     setSelectedMatchingItemId(null);
     setMatchedItemIds([]);
     setIncorrectMatchItemIds([]);
@@ -1194,6 +1406,59 @@ function App() {
       ),
     );
     setQuizQuestions(buildQuestionsForMode(preparedLessonSegment, currentLessonEligibleItems, settings.quizMode));
+  }
+
+  function startHandwritingTrail() {
+    if (!HANDWRITING_TRAIL_TRACKS.has(activeTrack)) {
+      setDashboardMessage("Handwriting Trail is available for Mount Hiragana and Mount Katakana.");
+      return;
+    }
+
+    if (currentLessonEligibleItems.length === 0) {
+      setDashboardMessage(`${currentTrackConfig.label} is at the summit. Every character on this mount is known.`);
+      setScreen("dashboard");
+      return;
+    }
+
+    const selectedCampItems =
+      currentLessonDefinition?.itemIds
+        .map((itemId) => itemById.get(itemId))
+        .filter((item): item is StudyItem => Boolean(item))
+        .filter((item) => !(progressByItem[item.id]?.excludedFromLessons ?? false))
+        .filter((item) => settings.includeKnownInLessons || getProgressStatus(progressByItem[item.id], settings.correctAnswersToKnown) !== "known") ?? [];
+    const lessonSegment = selectedCampItems.filter((item) => supportedHandwritingCharacters.has(item.character));
+    if (lessonSegment.length === 0) {
+      setDashboardMessage(`Handwriting verification is not available for this ${currentTrackConfig.label} camp yet.`);
+      setScreen("dashboard");
+      return;
+    }
+
+    setDashboardMessage("");
+    setActiveLessonItems(lessonSegment);
+    setActiveLessonTitle(currentLessonDefinition?.title ?? `${currentTrackConfig.label} Handwriting`);
+    setScreen("handwriting");
+    setLessonIndex(0);
+    setQuizIndex(0);
+    setHandwritingIndex(0);
+    setContextIndex(0);
+    setQuizScore(0);
+    setSessionMissedItemIds([]);
+    setAnswerFeedback(null);
+    setMatchingFeedback({ tone: "idle", message: "" });
+    setConcentrationFeedback({ tone: "idle", message: "" });
+    setHandwritingFeedback({ tone: "idle", message: "", score: 0 });
+    setHandwritingStrokes([]);
+    setActiveHandwritingStroke(null);
+    setShowHandwritingGuide(false);
+    setSelectedMatchingItemId(null);
+    setMatchedItemIds([]);
+    setIncorrectMatchItemIds([]);
+    setFlippedCardIds([]);
+    setConcentrationMatchedItemIds([]);
+    setIsResolvingConcentrationTurn(false);
+    setKnownEvent(null);
+    setContextExamples([]);
+    setQuizQuestions([]);
   }
 
   function startSelectedStudy() {
@@ -1311,6 +1576,82 @@ function App() {
     }
 
     setQuizIndex((value) => value + 1);
+  }
+
+  function resetHandwritingDrawing() {
+    setHandwritingStrokes([]);
+    setActiveHandwritingStroke(null);
+    setHandwritingFeedback({ tone: "idle", message: "", score: 0 });
+  }
+
+  function getHandwritingPoint(event: PointerEvent<SVGSVGElement>): { x: number; y: number } {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    return {
+      x: clamp((event.clientX - bounds.left) / bounds.width, 0, 1),
+      y: clamp((event.clientY - bounds.top) / bounds.height, 0, 1),
+    };
+  }
+
+  function startHandwritingStroke(event: PointerEvent<SVGSVGElement>) {
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setHandwritingFeedback({ tone: "idle", message: "", score: 0 });
+    setActiveHandwritingStroke([getHandwritingPoint(event)]);
+  }
+
+  function continueHandwritingStroke(event: PointerEvent<SVGSVGElement>) {
+    if (!activeHandwritingStroke) {
+      return;
+    }
+
+    const nextPoint = getHandwritingPoint(event);
+    const previousPoint = activeHandwritingStroke[activeHandwritingStroke.length - 1];
+    if (previousPoint && Math.hypot(previousPoint.x - nextPoint.x, previousPoint.y - nextPoint.y) < 0.008) {
+      return;
+    }
+
+    setActiveHandwritingStroke((stroke) => (stroke ? [...stroke, nextPoint] : stroke));
+  }
+
+  function finishHandwritingStroke() {
+    if (!activeHandwritingStroke || activeHandwritingStroke.length === 0) {
+      setActiveHandwritingStroke(null);
+      return;
+    }
+
+    setHandwritingStrokes((strokes) => [...strokes, activeHandwritingStroke]);
+    setActiveHandwritingStroke(null);
+  }
+
+  function verifyCurrentHandwriting() {
+    if (!currentHandwritingItem) {
+      return;
+    }
+
+    if (!isCurrentHandwritingSupported) {
+      setHandwritingFeedback({ tone: "error", message: "This character is not available in handwriting mode yet.", score: 0 });
+      return;
+    }
+
+    const result = verifyHandwritingAgainstGlyph(currentHandwritingItem.character, handwritingStrokes);
+    if (result.tone !== "success") {
+      setHandwritingFeedback(result);
+      playFeedbackSound("error");
+      return;
+    }
+
+    setQuizScore((value) => value + 1);
+    setHandwritingFeedback(result);
+    playFeedbackSound("success");
+  }
+
+  function advanceHandwritingTrail() {
+    resetHandwritingDrawing();
+    if (handwritingIndex + 1 >= activeLessonItems.length) {
+      setScreen("summary");
+      return;
+    }
+
+    setHandwritingIndex((value) => value + 1);
   }
 
   function submitAnswer(option: string) {
@@ -1490,11 +1831,16 @@ function App() {
     setScreen("dashboard");
     setLessonIndex(0);
     setQuizIndex(0);
+    setHandwritingIndex(0);
     setContextIndex(0);
     setQuizScore(0);
     setAnswerFeedback(null);
     setMatchingFeedback({ tone: "idle", message: "" });
     setConcentrationFeedback({ tone: "idle", message: "" });
+    setHandwritingFeedback({ tone: "idle", message: "", score: 0 });
+    setHandwritingStrokes([]);
+    setActiveHandwritingStroke(null);
+    setShowHandwritingGuide(false);
     setSelectedMatchingItemId(null);
     setMatchedItemIds([]);
     setIncorrectMatchItemIds([]);
@@ -1609,6 +1955,11 @@ function App() {
                     <button type="button" onClick={startSelectedStudy} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
                       {isBaseMount ? `Start ${selectedBaseStudy.title.split(":")[0]}` : `Start Selected Study (${SESSION_TARGET_MINUTES} min)`}
                     </button>
+                    {!isBaseMount && HANDWRITING_TRAIL_TRACKS.has(activeTrack) && (
+                      <button type="button" onClick={startHandwritingTrail} className="rounded-xl border border-slate-700 bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-50">
+                        Handwriting Trail
+                      </button>
+                    )}
                     {!isBaseMount && (
                       <button type="button" onClick={() => setScreen("dictionary")} className="rounded-xl border border-cyan-700 bg-cyan-50 px-4 py-2 text-sm font-semibold text-cyan-900 transition hover:bg-cyan-100">
                         {activeTrack === "kanji" ? "Dictionary" : "Reference Chart"}
@@ -2184,6 +2535,125 @@ function App() {
           </section>
         )}
 
+        {screen === "handwriting" && currentHandwritingItem && (
+          <section className="rounded-3xl border border-white/70 bg-white/85 p-4 shadow-lg backdrop-blur">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-wide text-slate-700">
+                  Handwriting Trail {handwritingIndex + 1} of {activeLessonItems.length}
+                </p>
+                <h2 className="mt-3 text-2xl font-bold text-slate-900">Draw the {activeTrack} for "{currentHandwritingItem.romaji ?? currentHandwritingItem.primaryMeaning}"</h2>
+                <p className="mt-2 text-sm text-slate-600">{activeLessonTitle}</p>
+              </div>
+              <div className="w-full max-w-md">
+                <MountProgressCard
+                  progress={activeMountProgress}
+                  active
+                  reducedMotion={settings.reducedMotion}
+                  correctAnswersToKnown={settings.correctAnswersToKnown}
+                />
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
+              <div className="mx-auto w-full max-w-xl">
+                <svg
+                  role="img"
+                  aria-label={`Drawing pad for ${currentHandwritingItem.romaji ?? currentHandwritingItem.primaryMeaning}`}
+                  viewBox="0 0 100 100"
+                  className="aspect-square w-full touch-none rounded-2xl border border-slate-300 bg-white shadow-inner"
+                  onPointerDown={startHandwritingStroke}
+                  onPointerMove={continueHandwritingStroke}
+                  onPointerUp={finishHandwritingStroke}
+                  onPointerCancel={finishHandwritingStroke}
+                >
+                  <path d="M 50 4 L 50 96 M 4 50 L 96 50" stroke="#e2e8f0" strokeWidth="0.8" strokeDasharray="2 2" />
+                  <rect x="12" y="12" width="76" height="76" fill="none" stroke="#e2e8f0" strokeWidth="0.8" />
+                  {showHandwritingGuide && (
+                    <text
+                      x="50"
+                      y="56"
+                      textAnchor="middle"
+                      dominantBaseline="middle"
+                      className="select-none fill-slate-200 text-[4.5rem] font-bold"
+                    >
+                      {currentHandwritingItem.character}
+                    </text>
+                  )}
+                  {handwritingStrokes.map((stroke, index) => (
+                    <path key={`stroke-${index}`} d={strokeToPath(stroke)} fill="none" stroke="#0f172a" strokeWidth="4.5" strokeLinecap="round" strokeLinejoin="round" />
+                  ))}
+                  {activeHandwritingStroke && (
+                    <path d={strokeToPath(activeHandwritingStroke)} fill="none" stroke="#0f172a" strokeWidth="4.5" strokeLinecap="round" strokeLinejoin="round" />
+                  )}
+                </svg>
+              </div>
+
+              <aside className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Prompt</p>
+                <p className="mt-2 text-4xl font-bold text-slate-900">{currentHandwritingItem.romaji ?? currentHandwritingItem.primaryMeaning}</p>
+                <p className="mt-1 text-sm text-slate-600">{currentHandwritingItem.strokeCount} strokes listed</p>
+
+                <label className="mt-4 flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                  <span className="text-sm font-medium text-slate-800">Show Guide</span>
+                  <input
+                    type="checkbox"
+                    checked={showHandwritingGuide}
+                    onChange={(event) => setShowHandwritingGuide(event.currentTarget.checked)}
+                    className="h-5 w-5 accent-slate-900"
+                  />
+                </label>
+
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  <button type="button" onClick={resetHandwritingDrawing} className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 transition hover:bg-slate-50">
+                    Clear
+                  </button>
+                  <button
+                    type="button"
+                    onClick={verifyCurrentHandwriting}
+                    disabled={handwritingStrokes.length === 0 || handwritingFeedback.tone === "success"}
+                    className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
+                      handwritingStrokes.length === 0 || handwritingFeedback.tone === "success"
+                        ? "cursor-not-allowed border border-slate-300 bg-slate-100 text-slate-400"
+                        : "bg-slate-900 text-white hover:bg-slate-700"
+                    }`}
+                  >
+                    Verify
+                  </button>
+                </div>
+
+                <div
+                  className={`mt-4 rounded-xl border p-3 ${
+                    handwritingFeedback.tone === "success"
+                      ? "border-emerald-200 bg-emerald-50 text-emerald-950"
+                      : handwritingFeedback.tone === "error"
+                        ? "border-rose-200 bg-rose-50 text-rose-950"
+                        : "border-slate-200 bg-slate-50 text-slate-700"
+                  }`}
+                >
+                  <p className="text-sm font-semibold">
+                    {handwritingFeedback.message || "Draw the character, then verify it."}
+                  </p>
+                  {handwritingFeedback.score > 0 && <p className="mt-1 text-xs">Match score: {Math.round(handwritingFeedback.score * 100)}%</p>}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={advanceHandwritingTrail}
+                  disabled={handwritingFeedback.tone !== "success"}
+                  className={`mt-4 w-full rounded-full px-5 py-2 text-sm font-semibold transition ${
+                    handwritingFeedback.tone !== "success"
+                      ? "cursor-not-allowed border border-slate-300 bg-slate-100 text-slate-400"
+                      : "bg-cyan-700 text-white hover:bg-cyan-600"
+                  }`}
+                >
+                  {handwritingIndex + 1 >= activeLessonItems.length ? "Finish Trail" : "Next Character"}
+                </button>
+              </aside>
+            </div>
+          </section>
+        )}
+
         {screen === "context" && currentContextExample && (
           <section className="rounded-3xl border border-white/70 bg-white/85 p-4 shadow-lg backdrop-blur">
             <p className="text-sm font-semibold uppercase tracking-wide text-violet-700">Recognition In Context - {activeLessonTitle}</p>
@@ -2229,14 +2699,16 @@ function App() {
             <p className="text-sm font-semibold uppercase tracking-wide text-violet-700">Session Summary</p>
             <h2 className="mt-2 text-3xl font-bold text-slate-900">Trail Segment Complete</h2>
             <p className="mt-3 text-slate-700">
-              You got {quizScore} out of {totalQuizUnits} clean on the first try. Every correct answer moved a symbol closer to known, and every newly known symbol advanced the climb by one step.
+              {isHandwritingSessionSummary
+                ? `You completed ${quizScore} out of ${sessionUnitTotal} handwriting prompts. Handwriting practice does not change known counts or summit progress.`
+                : `You got ${quizScore} out of ${sessionUnitTotal} clean on the first try. Every correct answer moved a symbol closer to known, and every newly known symbol advanced the climb by one step.`}
             </p>
-            {sessionMissedItemIds.length > 0 && (
+            {!isHandwritingSessionSummary && sessionMissedItemIds.length > 0 && (
               <p className="mt-2 text-sm text-slate-600">
                 {sessionMissedItemIds.length} missed {sessionMissedItemIds.length === 1 ? "symbol" : "symbols"} will return during later quizzes until they reach {settings.correctAnswersToKnown} correct answers.
               </p>
             )}
-            {knownEventItem && (
+            {!isHandwritingSessionSummary && knownEventItem && (
               <p className="mt-2 text-sm font-semibold text-cyan-800">
                 Latest climb: {knownEventItem.character} reached known status on {knownEvent ? trackConfigs[knownEvent.track].label : currentTrackConfig.label}.
               </p>

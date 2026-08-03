@@ -4,6 +4,7 @@ export type QuizType =
   | "multiple_choice"
   | "matching"
   | "concentration"
+  | "handwriting"
   | "similar_kanji"
   | "reading_quiz"
   | "sumo_quiz";
