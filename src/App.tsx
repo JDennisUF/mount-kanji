@@ -666,7 +666,7 @@ function MountProgressCard({
               active ? "bg-cyan-700 text-white hover:bg-cyan-600" : "border border-slate-300 bg-white text-slate-900 hover:bg-slate-50"
             }`}
           >
-            {active ? "Current Mount" : "Focus"}
+            {active ? "Current Mount" : "Select"}
           </button>
         )}
       </div>
@@ -1182,7 +1182,17 @@ function App() {
     setConcentrationMatchedItemIds([]);
     setIsResolvingConcentrationTurn(false);
     setKnownEvent(null);
-    setContextExamples(getContextExamplesForItems(preparedLessonSegment));
+    setContextExamples(
+      getContextExamplesForItems(
+        preparedLessonSegment,
+        3,
+        currentTrailItems.filter(
+          (item) =>
+            preparedLessonSegment.some((lessonItem) => lessonItem.id === item.id) ||
+            getProgressStatus(progressByItem[item.id], settings.correctAnswersToKnown) === "known",
+        ),
+      ),
+    );
     setQuizQuestions(buildQuestionsForMode(preparedLessonSegment, currentLessonEligibleItems, settings.quizMode));
   }
 
