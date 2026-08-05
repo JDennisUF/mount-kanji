@@ -133,7 +133,7 @@ export const hiraganaPool: StudyItem[] = hiraganaSeedRows.map((row, index) => ({
   strokeCount: row.strokeCount,
   mnemonic: row.mnemonic,
   sumoRelevant: false,
-  tags: ["hiragana", row.row, ...row.tags],
+  tags: Array.from(new Set(["hiragana", row.row, ...row.tags])),
   row: row.row,
   column: row.column,
   romaji: row.romaji,

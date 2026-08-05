@@ -944,6 +944,8 @@ function App() {
   const [dictionaryQuery, setDictionaryQuery] = useState("");
   const [dictionaryRadical, setDictionaryRadical] = useState("all");
   const [dictionarySumoOnly, setDictionarySumoOnly] = useState(false);
+  const [selectedDictionaryTags, setSelectedDictionaryTags] = useState<string[]>([]);
+  const [showDictionaryTags, setShowDictionaryTags] = useState(false);
   const [sumoQuery, setSumoQuery] = useState("");
   const [sumoCategory, setSumoCategory] = useState<SumoCategoryFilter>("all");
   const [selectedItemId, setSelectedItemId] = useState<string>(trackConfigs.hiragana.pool[0]?.id ?? "");
@@ -1052,6 +1054,8 @@ function App() {
     setDictionaryQuery("");
     setDictionaryRadical("all");
     setDictionarySumoOnly(false);
+    setSelectedDictionaryTags([]);
+    setShowDictionaryTags(false);
     setSelectedItemId(currentPool[0]?.id ?? "");
   }, [activeTrack, currentPool]);
 
@@ -1156,10 +1160,27 @@ function App() {
     return Array.from(new Set(radicals)).sort((a, b) => a.localeCompare(b));
   }, [activeTrack]);
 
+  const availableDictionaryTags = useMemo(() => {
+    const tags = currentPool.flatMap((item) => item.tags);
+    return Array.from(new Set(tags)).sort((a, b) => a.localeCompare(b));
+  }, [currentPool]);
+
+  function toggleDictionaryTag(tag: string) {
+    setSelectedDictionaryTags((previous) =>
+      previous.includes(tag)
+        ? previous.filter((selectedTag) => selectedTag !== tag)
+        : [...previous, tag],
+    );
+  }
+
   const filteredDictionaryItems = useMemo(() => {
     const query = dictionaryQuery.trim().toLowerCase();
 
     return currentPool.filter((item) => {
+      if (selectedDictionaryTags.length > 0 && !selectedDictionaryTags.every((tag) => item.tags.includes(tag))) {
+        return false;
+      }
+
       if (activeTrack === "kanji") {
         if (dictionarySumoOnly && !item.sumoRelevant) {
           return false;
@@ -1183,7 +1204,7 @@ function App() {
         (item.row?.toLowerCase().includes(query) ?? false)
       );
     });
-  }, [activeTrack, currentPool, dictionaryQuery, dictionaryRadical, dictionarySumoOnly]);
+  }, [activeTrack, currentPool, dictionaryQuery, dictionaryRadical, dictionarySumoOnly, selectedDictionaryTags]);
 
   const selectedDictionaryItem = useMemo(() => {
     const selected = filteredDictionaryItems.find((item) => item.id === selectedItemId);
@@ -2833,8 +2854,8 @@ function App() {
               </button>
             </div>
 
-            <div className="mt-3 grid gap-2 md:grid-cols-4">
-              <input
+		            <div className="mt-3 grid gap-2 md:grid-cols-4">
+		              <input
                 type="text"
                 value={sumoQuery}
                 onChange={(event) => setSumoQuery(event.currentTarget.value)}
@@ -2879,21 +2900,29 @@ function App() {
                 <p className="text-sm font-semibold uppercase tracking-wide text-sky-700">{activeTrack === "kanji" ? "Dictionary" : "Reference"}</p>
                 <h2 className="mt-1 text-2xl font-bold text-slate-900">{currentTrackConfig.dictionaryTitle}</h2>
               </div>
-              <button type="button" onClick={returnToDashboard} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
-                Back To Base Camp
-              </button>
-            </div>
-
-            <div className="mt-3 grid gap-2 md:grid-cols-4">
-              <input
-                type="text"
-                value={dictionaryQuery}
-                onChange={(event) => setDictionaryQuery(event.currentTarget.value)}
-                placeholder={activeTrack === "kanji" ? "Search by kanji, meaning, or reading" : "Search by kana, romaji, row, or tag"}
-                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-cyan-400 focus:ring-2 md:col-span-2"
-              />
-              {activeTrack === "kanji" ? (
-                <>
+	              <button type="button" onClick={returnToDashboard} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
+	                Back To Base Camp
+	              </button>
+	            </div>
+	
+		            <div className="mt-3 grid gap-2 md:grid-cols-[auto_minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)]">
+		              <button
+		                type="button"
+		                onClick={() => setShowDictionaryTags((shown) => !shown)}
+		                className="rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800 transition hover:bg-slate-50"
+		                aria-expanded={showDictionaryTags}
+		              >
+		                Tags{selectedDictionaryTags.length > 0 ? ` (${selectedDictionaryTags.length})` : ""}
+		              </button>
+		              <input
+		                type="text"
+		                value={dictionaryQuery}
+		                onChange={(event) => setDictionaryQuery(event.currentTarget.value)}
+		                placeholder={activeTrack === "kanji" ? "Search by kanji, meaning, or reading" : "Search by kana, romaji, row, or tag"}
+		                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-cyan-400 focus:ring-2"
+		              />
+	              {activeTrack === "kanji" ? (
+	                <>
                   <select
                     value={dictionaryRadical}
                     onChange={(event) => setDictionaryRadical(event.currentTarget.value)}
@@ -2917,8 +2946,49 @@ function App() {
                     ? "Full hiragana chart with voiced and contracted sounds."
                     : "Full katakana chart with voiced and contracted sounds."}
                 </p>
-              )}
-            </div>
+	              )}
+	            </div>
+
+	            <div className="mt-2 flex flex-wrap items-center gap-2">
+	              {selectedDictionaryTags.map((tag) => (
+	                <span key={tag} className="rounded-full bg-cyan-100 px-3 py-1 text-xs font-semibold text-cyan-950 ring-1 ring-cyan-200">
+	                  {tag}
+	                </span>
+	              ))}
+	              {selectedDictionaryTags.length > 0 && (
+	                <button
+	                  type="button"
+	                  onClick={() => setSelectedDictionaryTags([])}
+	                  className="rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold text-white transition hover:bg-slate-700"
+	                >
+	                  Clear
+	                </button>
+	              )}
+	            </div>
+
+	            {showDictionaryTags && (
+	              <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-2">
+	                <div className="flex flex-wrap gap-2">
+	                  {availableDictionaryTags.map((tag) => {
+	                    const isSelected = selectedDictionaryTags.includes(tag);
+	                    return (
+	                      <button
+	                        key={tag}
+	                        type="button"
+	                        onClick={() => toggleDictionaryTag(tag)}
+	                        className={`rounded-full px-3 py-1 text-xs font-semibold transition ${
+	                          isSelected
+	                            ? "bg-cyan-700 text-white hover:bg-cyan-600"
+	                            : "bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-cyan-50 hover:text-cyan-900 hover:ring-cyan-300"
+	                        }`}
+	                      >
+	                        {tag}
+	                      </button>
+	                    );
+	                  })}
+	                </div>
+	              </div>
+	            )}
 
             <div className="mt-2 flex items-center justify-between gap-3 text-sm text-slate-600">
               <p>Showing {filteredDictionaryItems.length} {currentTrackConfig.unitPlural}</p>
@@ -3008,11 +3078,11 @@ function App() {
 
                     <p className="mt-4 text-xs font-semibold uppercase tracking-wide text-slate-500">Tags</p>
                     <div className="mt-2 flex flex-wrap gap-2">
-                      {selectedDictionaryItem.tags.map((tag) => (
-                        <span key={tag} className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
-                          {tag}
-                        </span>
-                      ))}
+	                      {Array.from(new Set(selectedDictionaryItem.tags)).map((tag) => (
+	                        <span key={tag} className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
+	                          {tag}
+	                        </span>
+	                      ))}
                     </div>
 
                     {selectedDictionaryProgress && (
