@@ -116,7 +116,6 @@ interface AppSettings {
 
 type LessonCursorState = Record<StudyTrack, number>;
 
-const SESSION_TARGET_MINUTES = "5-10";
 const LESSON_CURSOR_STORAGE_KEY = "mount-kanji-lesson-cursor-v2";
 const SETTINGS_STORAGE_KEY = "mount-kanji-settings";
 const REVISIT_INSERTS = 2;
@@ -194,11 +193,10 @@ const mountainImages: Record<StudyTrack, string> = {
 
 const trackConfigs: Record<
   StudyTrack,
-  {
-    label: string;
-    dashboardTitle: string;
-    dashboardSubtitle: string;
-    trailName: string;
+	{
+	    label: string;
+	    dashboardTitle: string;
+	    trailName: string;
     introFocus: string;
     unitSingular: string;
     unitPlural: string;
@@ -208,11 +206,10 @@ const trackConfigs: Record<
     pool: StudyItem[];
   }
 > = {
-  kanji: {
-    label: "Mount Kanji",
-    dashboardTitle: "Base Camp Dashboard",
-    dashboardSubtitle: "Meaning-first recognition and steady summit progress",
-    trailName: "Kanji Trail",
+	  kanji: {
+	    label: "Mount Kanji",
+	    dashboardTitle: "Base Camp Dashboard",
+	    trailName: "Kanji Trail",
     introFocus: "Core recognition",
     unitSingular: "kanji",
     unitPlural: "kanji",
@@ -221,11 +218,10 @@ const trackConfigs: Record<
     lessons: seedLessons,
     pool: beginnerKanjiPool,
   },
-  hiragana: {
-    label: "Mount Hiragana",
-    dashboardTitle: "Hiragana Base Camp",
-    dashboardSubtitle: "Sound-first recognition and steady summit progress",
-    trailName: "Hiragana Trail",
+	  hiragana: {
+	    label: "Mount Hiragana",
+	    dashboardTitle: "Hiragana Base Camp",
+	    trailName: "Hiragana Trail",
     introFocus: "Kana sound mapping",
     unitSingular: "character",
     unitPlural: "characters",
@@ -234,11 +230,10 @@ const trackConfigs: Record<
     lessons: hiraganaLessons,
     pool: hiraganaPool,
   },
-  katakana: {
-    label: "Mount Katakana",
-    dashboardTitle: "Katakana Base Camp",
-    dashboardSubtitle: "Loanword and name recognition through repetition",
-    trailName: "Katakana Trail",
+	  katakana: {
+	    label: "Mount Katakana",
+	    dashboardTitle: "Katakana Base Camp",
+	    trailName: "Katakana Trail",
     introFocus: "Angular kana mapping",
     unitSingular: "character",
     unitPlural: "characters",
@@ -425,6 +420,28 @@ function accuracyPercent(row: UserStudyProgress): number {
 
 function getProgressStatus(row: UserStudyProgress | undefined, correctAnswersToKnown: number) {
   return resolveStudyStatus(row?.correctCount ?? 0, row?.incorrectCount ?? 0, correctAnswersToKnown);
+}
+
+function campProgressTone(knownCount: number, totalCount: number, isSelected: boolean): string {
+  if (isSelected) {
+    return "border-cyan-600 bg-cyan-50 text-cyan-950 ring-2 ring-cyan-100";
+  }
+
+  if (totalCount > 0 && knownCount >= totalCount) {
+    return "border-emerald-200 bg-emerald-50 text-emerald-950 hover:border-cyan-300 hover:bg-cyan-50";
+  }
+
+  const percentKnown = totalCount === 0 ? 0 : knownCount / totalCount;
+
+  if (percentKnown >= 0.5) {
+    return "border-sky-200 bg-sky-50 text-slate-900 hover:border-cyan-300 hover:bg-cyan-50";
+  }
+
+  if (percentKnown > 0) {
+    return "border-amber-200 bg-amber-50 text-slate-900 hover:border-cyan-300 hover:bg-cyan-50";
+  }
+
+  return "border-slate-200 bg-white text-slate-900 hover:border-cyan-300 hover:bg-cyan-50";
 }
 
 function buildQuizQuestions(items: StudyItem[], pool: StudyItem[]): QuizQuestion[] {
@@ -683,9 +700,9 @@ function MountProgressCard({
         )}
       </div>
 
-      <div className="mt-4 flex items-center gap-4">
+      <div className="mt-4 flex flex-col items-center gap-3">
         <MountainTrail progress={progress} active={active} reducedMotion={reducedMotion} />
-        <div className="min-w-0 flex-1 space-y-3">
+        <div className="grid w-full min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-1">
           <div className="rounded-xl bg-slate-50 p-3">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Current Position</p>
             <p className="mt-1 text-sm font-semibold text-slate-900">
@@ -961,7 +978,7 @@ function App() {
   const isBaseMount = activeMount === "base";
   const selectedBaseStudy = baseCampStudies[baseStudyIndex] ?? baseCampStudies[0];
   const dashboardTitle = isBaseMount ? "Base Camp" : currentTrackConfig.dashboardTitle;
-  const dashboardSubtitle = isBaseMount ? "Start with how Japanese writing systems fit together" : currentTrackConfig.dashboardSubtitle;
+  const dashboardSubtitle = isBaseMount ? "Start with how Japanese writing systems fit together" : "";
   const currentPool = currentTrackConfig.pool;
   const currentLessons = currentTrackConfig.lessons;
   const isKanaTrack = activeTrack === "hiragana" || activeTrack === "katakana";
@@ -1200,8 +1217,8 @@ function App() {
     });
   }, [sumoCategory, sumoQuery]);
 
-  function buildLessonSegment(lesson: SeedLesson | undefined): StudyItem[] {
-    if (currentLessonEligibleItems.length === 0) {
+  function buildLessonSegment(lesson: SeedLesson | undefined, eligibleItems = currentLessonEligibleItems): StudyItem[] {
+    if (eligibleItems.length === 0) {
       return [];
     }
 
@@ -1239,7 +1256,7 @@ function App() {
     }
 
     if (picked.length === 0) {
-      return currentLessonEligibleItems.slice(0, Math.min(5, currentLessonEligibleItems.length));
+      return eligibleItems.slice(0, Math.min(5, eligibleItems.length));
     }
 
     return picked;
@@ -1337,14 +1354,18 @@ function App() {
     setDashboardMessage("");
   }
 
-  function startLesson() {
-    if (currentLessonEligibleItems.length === 0) {
+  function startLesson(lessonIndexOverride = currentLessonCursor) {
+    const lessonIndex = clamp(lessonIndexOverride, 0, Math.max(0, currentLessons.length - 1));
+    const lessonDefinition = currentLessons[lessonIndex];
+    const eligibleItems = settings.includeKnownInLessons ? currentTrailItems : currentPendingItems;
+
+    if (eligibleItems.length === 0) {
       setDashboardMessage(`${currentTrackConfig.label} is at the summit. Every symbol on this mount is known.`);
       setScreen("dashboard");
       return;
     }
 
-    const lessonSegment = buildLessonSegment(currentLessonDefinition);
+    const lessonSegment = buildLessonSegment(lessonDefinition, eligibleItems);
     if (lessonSegment.length === 0) {
       setDashboardMessage(`No eligible ${currentTrackConfig.unitPlural} are available for the next trail segment.`);
       setScreen("dashboard");
@@ -1371,8 +1392,12 @@ function App() {
     }
 
     setDashboardMessage("");
+    setLessonCursorByTrack((previous) => ({
+      ...previous,
+      [activeTrack]: lessonIndex,
+    }));
     setActiveLessonItems(preparedLessonSegment);
-    setActiveLessonTitle(currentLessonDefinition?.title ?? `${currentTrackConfig.label} Lesson`);
+    setActiveLessonTitle(lessonDefinition?.title ?? `${currentTrackConfig.label} Lesson`);
     setScreen("lesson");
     setLessonIndex(0);
     setQuizIndex(0);
@@ -1405,7 +1430,7 @@ function App() {
         ),
       ),
     );
-    setQuizQuestions(buildQuestionsForMode(preparedLessonSegment, currentLessonEligibleItems, settings.quizMode));
+    setQuizQuestions(buildQuestionsForMode(preparedLessonSegment, eligibleItems, settings.quizMode));
   }
 
   function startHandwritingTrail() {
@@ -1461,14 +1486,10 @@ function App() {
     setQuizQuestions([]);
   }
 
-  function startSelectedStudy() {
-    if (isBaseMount) {
-      setScreen("baseStudy");
-      setDashboardMessage("");
-      return;
-    }
-
-    startLesson();
+  function startBaseStudy(index: number) {
+    setBaseStudyIndex(clamp(index, 0, Math.max(0, baseCampStudies.length - 1)));
+    setScreen("baseStudy");
+    setDashboardMessage("");
   }
 
   function recordTutorActivity(itemId: string, activityType: TutorActivityType, isCorrect = true, selectedItemId?: string | null) {
@@ -1827,6 +1848,23 @@ function App() {
     });
   }
 
+  function markItemUnknown(itemId: string) {
+    setProgressByItem((previous) => {
+      const currentProgress = previous[itemId] ?? createDefaultProgress(itemId);
+      return {
+        ...previous,
+        [itemId]: {
+          ...currentProgress,
+          status: currentProgress.incorrectCount > 0 ? "learning" : "new",
+          masteryStage: "teach",
+          correctCount: 0,
+          lastAnsweredCorrect: false,
+          lastReviewedAt: new Date().toISOString(),
+        },
+      };
+    });
+  }
+
   function returnToDashboard() {
     setScreen("dashboard");
     setLessonIndex(0);
@@ -1850,11 +1888,7 @@ function App() {
   }
 
   const overviewStats = isBaseMount
-    ? [
-        { label: "Studies", value: baseCampStudies.length, tone: "border-cyan-200 bg-cyan-50 text-cyan-900" },
-        { label: "Questions", value: 0, tone: "border-amber-200 bg-amber-50 text-amber-900" },
-        { label: "Wrong Answers", value: 0, tone: "border-violet-200 bg-violet-50 text-violet-900" },
-      ]
+    ? []
     : [
         { label: "Known", value: activeMountProgress.knownCount, tone: "border-emerald-200 bg-emerald-50 text-emerald-900" },
         { label: "Remaining", value: activeMountProgress.remainingCount, tone: "border-amber-200 bg-amber-50 text-amber-900" },
@@ -1875,18 +1909,57 @@ function App() {
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-700">Mount Kanji</p>
-                <span className="text-xs text-slate-500">{dashboardSubtitle}</span>
+	                {dashboardSubtitle && <span className="text-xs text-slate-500">{dashboardSubtitle}</span>}
               </div>
               <h1 className="mt-1 text-2xl font-bold leading-tight text-slate-900 sm:text-3xl">{dashboardTitle}</h1>
             </div>
 
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:min-w-[25rem]">
-              {overviewStats.map((stat) => (
-                <article key={stat.label} className={`rounded-xl border px-3 py-2 shadow-sm ${stat.tone}`}>
-                  <p className="text-[11px] font-semibold uppercase tracking-wide">{stat.label}</p>
-                  <p className="mt-0.5 text-xl font-bold">{stat.value}</p>
-                </article>
-              ))}
+            <div className="flex flex-wrap items-center justify-start gap-2 lg:justify-end">
+	              {overviewStats.length > 0 && (
+	                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:min-w-[25rem]">
+	                  {overviewStats.map((stat) => (
+                    <article key={stat.label} className={`rounded-xl border px-3 py-2 shadow-sm ${stat.tone}`}>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide">{stat.label}</p>
+                      <p className="mt-0.5 text-xl font-bold">{stat.value}</p>
+                    </article>
+	                  ))}
+	                </div>
+	              )}
+	              <button
+	                type="button"
+	                onClick={() => setScreen("progress")}
+	                aria-label="Progress"
+	                title="Progress"
+	                className="inline-flex size-11 items-center justify-center rounded-xl border border-emerald-700 bg-emerald-50 text-emerald-900 shadow-sm transition hover:bg-emerald-100"
+	              >
+	                <img src={mountainStatusKanji} alt="" aria-hidden="true" className="size-7 rounded-full object-cover" />
+	              </button>
+	              <button
+	                type="button"
+	                onClick={() => setScreen("sumo")}
+	                aria-label="Heya"
+	                title="Heya"
+	                className="inline-flex size-11 items-center justify-center rounded-xl border border-amber-700 bg-amber-50 text-amber-900 shadow-sm transition hover:bg-amber-100"
+	              >
+	                <svg aria-hidden="true" viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+	                  <path d="M3 10.5 12 3l9 7.5" />
+	                  <path d="M5 9.5V21h14V9.5" />
+	                  <path d="M9 21v-7h6v7" />
+	                  <path d="M8 12h8" />
+	                </svg>
+	              </button>
+	              <button
+	                type="button"
+	                onClick={() => setScreen("settings")}
+	                aria-label="Settings"
+                title="Settings"
+                className="inline-flex size-11 items-center justify-center rounded-xl border border-violet-700 bg-violet-50 text-violet-900 shadow-sm transition hover:bg-violet-100"
+              >
+                <svg aria-hidden="true" viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z" />
+                  <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1A2 2 0 1 1 4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.3 7A2 2 0 1 1 7.1 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1A2 2 0 1 1 19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.1a2 2 0 1 1 0 4H21a1.7 1.7 0 0 0-1.6 1Z" />
+                </svg>
+              </button>
             </div>
           </div>
         </header>
@@ -1923,8 +1996,7 @@ function App() {
                       }`}
                     >
                       <p className="text-sm font-semibold">{trackConfigs[track].label}</p>
-                      <p className="mt-1 text-xs text-slate-600">{trackConfigs[track].dashboardSubtitle}</p>
-                      <p className="mt-2 text-xs font-semibold text-slate-800">
+	                      <p className="mt-2 text-xs font-semibold text-slate-800">
                         {mountProgressByTrack[track].knownCount}/{mountProgressByTrack[track].totalSteps} known
                       </p>
                     </button>
@@ -1933,31 +2005,29 @@ function App() {
               </article>
 
               <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-                <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h2 className="text-lg font-bold text-slate-900">Choose Study</h2>
-                      <p className="text-sm text-slate-600">
-                        {isBaseMount ? `Base Camp - ${selectedBaseStudy.title}` : `${currentTrackConfig.label} - ${currentLessonDefinition?.title ?? "Trail Lesson"}`}
-                      </p>
-                    </div>
-                    {isBaseMount ? (
-                      <p className="mt-1 text-sm text-slate-600">Intro studies have no wrong answers. They explain what you are about to learn.</p>
-                    ) : (
-                      <p className="mt-1 text-sm text-slate-600">
-                        Selected study {currentLessonCursor + 1} of {trailLessonCount}: {currentLessonKnownCount}/{currentLessonTotalCount} known
-                      </p>
-                    )}
-                    {dashboardMessage && <p className="mt-2 text-sm font-semibold text-emerald-800">{dashboardMessage}</p>}
-                  </div>
-
-                  <div className="grid w-full gap-2 sm:grid-cols-2 xl:w-auto xl:grid-cols-3">
-                    <button type="button" onClick={startSelectedStudy} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
-                      {isBaseMount ? `Start ${selectedBaseStudy.title.split(":")[0]}` : `Start Selected Study (${SESSION_TARGET_MINUTES} min)`}
-                    </button>
-                    {!isBaseMount && HANDWRITING_TRAIL_TRACKS.has(activeTrack) && (
-                      <button type="button" onClick={startHandwritingTrail} className="rounded-xl border border-slate-700 bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-50">
-                        Handwriting Trail
+	                <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+	                  <div>
+	                    <div className="flex flex-wrap items-center gap-2">
+	                      <h2 className="text-lg font-bold text-slate-900">Choose Study</h2>
+	                      {!isBaseMount && (
+	                        <p className="text-sm text-slate-600">
+	                          {currentTrackConfig.label} - {currentLessonDefinition?.title ?? "Trail Lesson"}
+	                        </p>
+	                      )}
+	                    </div>
+	                    {isBaseMount && <p className="mt-1 text-sm text-slate-600">Base Camp - Intro {baseStudyIndex + 1}</p>}
+	                    {!isBaseMount && (
+	                      <p className="mt-1 text-sm text-slate-600">
+	                        Selected study {currentLessonCursor + 1} of {trailLessonCount}: {currentLessonKnownCount}/{currentLessonTotalCount} known
+	                      </p>
+	                    )}
+	                    {dashboardMessage && <p className="mt-2 text-sm font-semibold text-emerald-800">{dashboardMessage}</p>}
+	                  </div>
+	
+	                  <div className="grid w-full gap-2 sm:grid-cols-2 xl:w-auto xl:grid-cols-2">
+	                    {!isBaseMount && HANDWRITING_TRAIL_TRACKS.has(activeTrack) && (
+	                      <button type="button" onClick={startHandwritingTrail} className="rounded-xl border border-slate-700 bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-50">
+	                        Handwriting Trail
                       </button>
                     )}
                     {!isBaseMount && (
@@ -1965,139 +2035,138 @@ function App() {
                         {activeTrack === "kanji" ? "Dictionary" : "Reference Chart"}
                       </button>
                     )}
-                    {!isBaseMount && (
-                      <button type="button" onClick={() => setScreen("progress")} className="rounded-xl border border-emerald-700 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-900 transition hover:bg-emerald-100">
-                        Progress
-                      </button>
-                    )}
-                    <button type="button" onClick={() => setScreen("settings")} className="rounded-xl border border-violet-700 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-900 transition hover:bg-violet-100">
-                      Settings
-                    </button>
-                    {!isBaseMount && (
-                      <button type="button" onClick={() => setScreen("sumo")} className="rounded-xl border border-amber-700 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-900 transition hover:bg-amber-100">
-                        Sumo Terms
-                      </button>
-                    )}
-                  </div>
-                </div>
+	                  </div>
+	                </div>
 
-                <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <h3 className="text-sm font-semibold text-slate-900">Choose Study</h3>
-                      <p className="mt-1 text-xs text-slate-600">
-                        {isBaseMount
-                          ? "Start with explanations, then move into Hiragana when ready."
-                          : "Studies group similar sounds or related symbols. Pick one, then start the selected study."}
-                      </p>
-                    </div>
-                    <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-200">
-                      {isBaseMount ? "intro" : currentTrackConfig.unitPlural}
-                    </span>
-                  </div>
-                  <div className="mt-3 grid max-h-80 gap-2 overflow-y-auto pr-1 sm:grid-cols-2 xl:grid-cols-3">
-                    {isBaseMount ? (
-                      baseCampStudies.map((study, index) => {
-                        const isSelected = index === baseStudyIndex;
-                        return (
-                        <button
-                          key={study.id}
-                          type="button"
-                          onClick={() => setBaseStudyIndex(index)}
-                          className={`rounded-xl border px-3 py-3 text-left transition ${
-                            isSelected
-                              ? "border-cyan-600 bg-cyan-50 text-cyan-950 ring-2 ring-cyan-100"
-                              : "border-slate-200 bg-white text-slate-900 hover:border-cyan-300 hover:bg-cyan-50"
-                          }`}
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <div>
-                              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Intro {index + 1}</p>
-                              <p className="mt-1 text-sm font-bold leading-tight">{study.title}</p>
-                              <p className="mt-1 text-xs text-slate-600">{study.focus}</p>
-                            </div>
-                            {isSelected && <span className="rounded-full bg-cyan-700 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">Selected</span>}
-                          </div>
-                        </button>
-                      )})
-                    ) : currentLessons.map((lesson, index) => {
-                      const lessonKnown = lesson.itemIds.filter((itemId) => getProgressStatus(progressByItem[itemId], settings.correctAnswersToKnown) === "known").length;
-                      const isSelected = index === currentLessonCursor;
-                      const isComplete = lesson.itemIds.length > 0 && lessonKnown >= lesson.itemIds.length;
-                      return (
-                        <button
-                          key={lesson.id}
-                          type="button"
-                          onClick={() => selectLessonCamp(index)}
-                          className={`rounded-xl border px-3 py-3 text-left transition ${
-                            isSelected
-                              ? "border-cyan-600 bg-cyan-50 text-cyan-950 ring-2 ring-cyan-100"
-                              : isComplete
-                                ? "border-emerald-200 bg-white text-emerald-950 hover:border-cyan-300 hover:bg-cyan-50"
-                                : "border-slate-200 bg-white text-slate-900 hover:border-cyan-300 hover:bg-cyan-50"
-                          }`}
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <div>
-                              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Camp {index + 1}</p>
-                              <p className="mt-1 text-sm font-bold leading-tight">{lesson.title}</p>
-                              <p className="mt-1 text-xs text-slate-600">{lesson.focus}</p>
-                            </div>
-                            {isSelected && <span className="rounded-full bg-cyan-700 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">Selected</span>}
-                            {!isSelected && isComplete && <span className="rounded-full bg-emerald-700 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">Done</span>}
-                          </div>
-                          <p className="mt-2 text-xs font-semibold text-slate-700">
-                            {lessonKnown}/{lesson.itemIds.length} known
-                          </p>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
+	                <div className={`mt-3 grid gap-3 ${isBaseMount ? "" : "xl:grid-cols-[minmax(0,1fr)_18rem]"}`}>
+	                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+	                    <div className="flex flex-wrap items-center justify-between gap-2">
+	                      <div>
+	                        <h3 className="text-sm font-semibold text-slate-900">Choose Study</h3>
+	                        <p className="mt-1 text-xs text-slate-600">
+	                          {isBaseMount
+	                            ? "Start with explanations, then move into Hiragana when ready."
+	                            : "Studies group similar sounds or related symbols. Pick one, then start the selected study."}
+	                        </p>
+	                      </div>
+	                      <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-200">
+	                        {isBaseMount ? "intro" : currentTrackConfig.unitPlural}
+	                      </span>
+	                    </div>
+	                    <div className="mt-3 max-h-[calc(100vh-14rem)] min-h-96 space-y-2 overflow-y-auto pr-1">
+	                      {isBaseMount ? (
+	                        baseCampStudies.map((study, index) => {
+	                          const isSelected = index === baseStudyIndex;
+	                          return (
+	                          <article
+	                            key={study.id}
+	                            className={`flex items-center gap-2 rounded-xl border bg-white transition ${
+	                              isSelected
+	                                ? "border-cyan-600 bg-cyan-50 text-cyan-950 ring-2 ring-cyan-100"
+	                                : "border-slate-200 bg-white text-slate-900 hover:border-cyan-300 hover:bg-cyan-50"
+	                            }`}
+	                          >
+	                            <button type="button" onClick={() => setBaseStudyIndex(index)} className="min-w-0 flex-1 px-3 py-2 text-left">
+	                              <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+	                                <p className="shrink-0 text-xs font-semibold uppercase tracking-wide text-slate-500">Intro {index + 1}</p>
+	                                <p className="min-w-0 text-sm font-bold leading-tight">{study.title}</p>
+	                                {isSelected && <span className="rounded-full bg-cyan-700 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">Selected</span>}
+	                              </div>
+	                            </button>
+	                            <button
+	                              type="button"
+	                              onClick={() => startBaseStudy(index)}
+	                              aria-label={`Start Intro ${index + 1}`}
+	                              title={`Start Intro ${index + 1}`}
+	                              className="mr-2 inline-flex size-9 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-white transition hover:bg-slate-700"
+	                            >
+	                              <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="currentColor">
+	                                <path d="M8 5v14l11-7Z" />
+	                              </svg>
+	                            </button>
+	                          </article>
+	                        )})
+	                      ) : currentLessons.map((lesson, index) => {
+	                        const lessonKnown = lesson.itemIds.filter((itemId) => getProgressStatus(progressByItem[itemId], settings.correctAnswersToKnown) === "known").length;
+	                        const isSelected = index === currentLessonCursor;
+	                        const isComplete = lesson.itemIds.length > 0 && lessonKnown >= lesson.itemIds.length;
+	                        return (
+	                          <article
+	                            key={lesson.id}
+	                            className={`flex items-center gap-2 rounded-xl border transition ${campProgressTone(lessonKnown, lesson.itemIds.length, isSelected)}`}
+	                          >
+	                            <button type="button" onClick={() => selectLessonCamp(index)} className="min-w-0 flex-1 px-3 py-2 text-left">
+	                              <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+	                                <p className="shrink-0 text-xs font-semibold uppercase tracking-wide text-slate-500">Camp {index + 1}</p>
+	                                <p className="min-w-0 text-sm font-bold leading-tight">{lesson.title}</p>
+	                                <p className="shrink-0 text-xs font-semibold text-slate-700">
+	                                  {lessonKnown}/{lesson.itemIds.length} known
+	                                </p>
+	                                {isSelected && <span className="rounded-full bg-cyan-700 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">Selected</span>}
+	                                {!isSelected && isComplete && <span className="rounded-full bg-emerald-700 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">Done</span>}
+	                              </div>
+	                            </button>
+	                            <button
+	                              type="button"
+	                              onClick={() => startLesson(index)}
+	                              aria-label={`Start Camp ${index + 1}`}
+	                              title={`Start Camp ${index + 1}`}
+	                              className="mr-2 inline-flex size-9 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-white transition hover:bg-slate-700"
+	                            >
+	                              <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="currentColor">
+	                                <path d="M8 5v14l11-7Z" />
+	                              </svg>
+	                            </button>
+	                          </article>
+	                        );
+	                      })}
+	                    </div>
+	                  </div>
 
-                {!isBaseMount && <div className="mt-3">
-                  <article className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-                    <h3 className="text-sm font-semibold text-slate-900">Current Climb</h3>
-                    <div className="mt-3">
-                      <MountProgressCard
-                        progress={activeMountProgress}
-                        active
-                        reducedMotion={settings.reducedMotion}
-                        correctAnswersToKnown={settings.correctAnswersToKnown}
-                      />
-                    </div>
-                  </article>
-                </div>}
+	                  {!isBaseMount && (
+	                    <aside className="space-y-3">
+	                      <article className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+	                        <h3 className="text-sm font-semibold text-slate-900">Current Climb</h3>
+	                        <div className="mt-3 flex justify-center">
+	                          <MountProgressCard
+	                            progress={activeMountProgress}
+	                            active
+	                            reducedMotion={settings.reducedMotion}
+	                            correctAnswersToKnown={settings.correctAnswersToKnown}
+	                          />
+	                        </div>
+	                      </article>
 
-                {!isBaseMount && <div className="mt-3 grid gap-3 lg:grid-cols-2">
-                  <article className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-                    <h3 className="text-sm font-semibold text-slate-900">Recent Attempts</h3>
-                    {recentAttempts.length === 0 && <p className="mt-1 text-sm text-slate-600">No attempts yet.</p>}
-                    {recentAttempts.length > 0 && (
-                      <ul className="mt-1 space-y-1 text-sm text-slate-700">
-                        {recentAttempts.map((attempt) => {
-                          const item = itemById.get(attempt.itemId);
-                          return (
-                            <li key={attempt.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-1.5">
-                              <span className="font-semibold text-slate-900">{item?.character ?? "?"}</span>
-                              <span>{attempt.correct ? "Correct" : "Miss"}</span>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    )}
-                  </article>
+	                      <article className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+	                        <h3 className="text-sm font-semibold text-slate-900">Recent Attempts</h3>
+	                        {recentAttempts.length === 0 && <p className="mt-1 text-sm text-slate-600">No attempts yet.</p>}
+	                        {recentAttempts.length > 0 && (
+	                          <ul className="mt-1 space-y-1 text-sm text-slate-700">
+	                            {recentAttempts.map((attempt) => {
+	                              const item = itemById.get(attempt.itemId);
+	                              return (
+	                                <li key={attempt.id} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-1.5">
+	                                  <span className="font-semibold text-slate-900">{item?.character ?? "?"}</span>
+	                                  <span>{attempt.correct ? "Correct" : "Miss"}</span>
+	                                </li>
+	                              );
+	                            })}
+	                          </ul>
+	                        )}
+	                      </article>
 
-                  <article className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-                    <h3 className="text-sm font-semibold text-slate-900">Mount Rule</h3>
-                    <p className="mt-2 text-sm text-slate-700">
-                      A symbol becomes known after {settings.correctAnswersToKnown} cumulative correct answers. Misses still count as misses, but they never erase earlier progress.
-                    </p>
-                    <p className="mt-2 text-sm text-slate-700">
-                      Known symbols leave future quizzes, and every newly known symbol moves you one step closer to the summit.
-                    </p>
-                  </article>
-                </div>}
+	                      <article className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+	                        <h3 className="text-sm font-semibold text-slate-900">Mount Rule</h3>
+	                        <p className="mt-2 text-sm text-slate-700">
+	                          A symbol becomes known after {settings.correctAnswersToKnown} cumulative correct answers. Misses still count as misses, but they never erase earlier progress.
+	                        </p>
+	                        <p className="mt-2 text-sm text-slate-700">
+	                          Known symbols leave future quizzes, and every newly known symbol moves you one step closer to the summit.
+	                        </p>
+	                      </article>
+	                    </aside>
+	                  )}
+	                </div>
               </div>
             </div>
           </section>
@@ -2745,7 +2814,7 @@ function App() {
               <button type="button" onClick={() => setScreen("progress")} className="rounded-full bg-emerald-700 px-5 py-2 text-sm font-semibold text-white transition hover:bg-emerald-600">
                 View Progress
               </button>
-              <button type="button" onClick={startLesson} className="rounded-full bg-cyan-700 px-5 py-2 text-sm font-semibold text-white transition hover:bg-cyan-600">
+	              <button type="button" onClick={() => startLesson()} className="rounded-full bg-cyan-700 px-5 py-2 text-sm font-semibold text-white transition hover:bg-cyan-600">
                 Climb Another Segment
               </button>
             </div>
@@ -2755,10 +2824,10 @@ function App() {
         {screen === "sumo" && (
           <section className="rounded-3xl border border-white/70 bg-white/85 p-4 shadow-lg backdrop-blur">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <p className="text-sm font-semibold uppercase tracking-wide text-amber-700">Sumo</p>
-                <h2 className="mt-1 text-3xl font-bold text-slate-900">Tournament Terms Browser</h2>
-              </div>
+	              <div>
+	                <p className="text-sm font-semibold uppercase tracking-wide text-amber-700">Sumo</p>
+	                <h2 className="mt-1 text-3xl font-bold text-slate-900">Heya</h2>
+	              </div>
               <button type="button" onClick={returnToDashboard} className="rounded-full bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
                 Back To Base Camp
               </button>
@@ -2859,20 +2928,26 @@ function App() {
             <div className="mt-3 grid gap-3 lg:h-[calc(100vh-12rem)] lg:grid-cols-[minmax(0,1.55fr)_22rem]">
               <div className="rounded-2xl border border-slate-200 bg-white p-3 lg:min-h-0">
                 <div className={`grid gap-2 lg:max-h-full lg:overflow-y-auto lg:pr-1 ${activeTrack === "kanji" ? "grid-cols-5 md:grid-cols-8 lg:grid-cols-8 xl:grid-cols-10" : "grid-cols-5 md:grid-cols-5"}`}>
-                  {filteredDictionaryItems.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => setSelectedItemId(item.id)}
-                      className={`rounded-xl border px-2 py-3 text-2xl font-bold transition ${
-                        selectedDictionaryItem?.id === item.id
-                          ? "border-cyan-600 bg-cyan-100 text-cyan-950"
-                          : "border-slate-200 bg-slate-50 text-slate-900 hover:border-cyan-400 hover:bg-cyan-50"
-                      }`}
-                    >
-                      {item.character}
-                    </button>
-                  ))}
+	                  {filteredDictionaryItems.map((item) => {
+	                    const isSelected = selectedDictionaryItem?.id === item.id;
+	                    const isKnown = getProgressStatus(progressByItem[item.id], settings.correctAnswersToKnown) === "known";
+	                    return (
+	                      <button
+	                        key={item.id}
+	                        type="button"
+	                        onClick={() => setSelectedItemId(item.id)}
+	                        className={`rounded-xl border px-2 py-3 text-2xl font-bold transition ${
+	                          isSelected
+	                            ? "border-cyan-600 bg-cyan-100 text-cyan-950"
+	                            : isKnown
+	                              ? "border-emerald-200 bg-emerald-50 text-emerald-950 hover:border-cyan-400 hover:bg-cyan-50"
+	                              : "border-slate-200 bg-slate-50 text-slate-900 hover:border-cyan-400 hover:bg-cyan-50"
+	                        }`}
+	                      >
+	                        {item.character}
+	                      </button>
+	                    );
+	                  })}
                 </div>
               </div>
 
@@ -2959,18 +3034,24 @@ function App() {
                         >
                           {selectedDictionaryProgress.excludedFromLessons ? "Include In Future Trails" : "Exclude From Future Trails"}
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => markItemKnown(selectedDictionaryItem.id)}
-                          disabled={selectedDictionaryStatus === "known"}
-                          className={`mt-3 w-full rounded-xl px-3 py-2 text-sm font-semibold transition ${
-                            selectedDictionaryStatus === "known"
-                              ? "cursor-not-allowed border border-slate-300 bg-slate-100 text-slate-400"
-                              : "border border-cyan-700 bg-cyan-50 text-cyan-900 hover:bg-cyan-100"
-                          }`}
-                        >
-                          {selectedDictionaryStatus === "known" ? "Already Known" : "Mark Known"}
-                        </button>
+	                        <button
+	                          type="button"
+	                          onClick={() => {
+	                            if (selectedDictionaryStatus === "known") {
+	                              markItemUnknown(selectedDictionaryItem.id);
+	                              return;
+	                            }
+
+	                            markItemKnown(selectedDictionaryItem.id);
+	                          }}
+	                          className={`mt-3 w-full rounded-xl px-3 py-2 text-sm font-semibold transition ${
+	                            selectedDictionaryStatus === "known"
+	                              ? "border border-amber-700 bg-amber-50 text-amber-900 hover:bg-amber-100"
+	                              : "border border-cyan-700 bg-cyan-50 text-cyan-900 hover:bg-cyan-100"
+	                          }`}
+	                        >
+	                          {selectedDictionaryStatus === "known" ? "Mark Unknown" : "Mark Known"}
+	                        </button>
                       </div>
                     )}
                   </>
