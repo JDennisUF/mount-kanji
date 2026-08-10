@@ -576,8 +576,26 @@ function buildMountProgress(
 }
 
 function highlightContextText(example: TutorContextExample, items: StudyItem[]): string[] {
-  const targets = new Set(items.filter((item) => example.targetItemIds.includes(item.id)).map((item) => item.character));
-  return Array.from(example.written).map((character) => (targets.has(character) ? `[${character}]` : character));
+  const targets = items
+    .filter((item) => example.targetItemIds.includes(item.id))
+    .map((item) => item.character)
+    .sort((a, b) => b.length - a.length);
+  const pieces: string[] = [];
+
+  for (let index = 0; index < example.written.length; ) {
+    const target = targets.find((candidate) => example.written.startsWith(candidate, index));
+
+    if (target) {
+      pieces.push(`[${target}]`);
+      index += target.length;
+    } else {
+      const [character] = Array.from(example.written.slice(index));
+      pieces.push(character);
+      index += character.length;
+    }
+  }
+
+  return pieces;
 }
 
 function introSegmentClass(text: string): string {
