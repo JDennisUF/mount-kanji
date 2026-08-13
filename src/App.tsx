@@ -148,6 +148,24 @@ const DEFAULT_SETTINGS: AppSettings = {
 
 const supportedHandwritingCharacters = new Set([...hiraganaPool, ...katakanaPool].map((item) => item.character));
 
+function StudyStartButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className="group mr-2 inline-flex size-10 shrink-0 items-center justify-center rounded-xl border border-cyan-700 bg-gradient-to-br from-cyan-600 via-teal-600 to-emerald-600 text-white shadow-md shadow-cyan-900/20 ring-1 ring-white/70 transition hover:-translate-y-0.5 hover:from-cyan-500 hover:via-teal-500 hover:to-emerald-500 hover:shadow-lg hover:shadow-cyan-900/25 active:translate-y-0 active:shadow-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 focus-visible:ring-offset-2"
+    >
+      <span className="inline-flex size-6 items-center justify-center rounded-full bg-white/95 text-cyan-800 shadow-sm transition group-hover:scale-105">
+        <svg aria-hidden="true" viewBox="0 0 24 24" className="ml-0.5 size-3.5" fill="currentColor">
+          <path d="M8 5v14l11-7Z" />
+        </svg>
+      </span>
+    </button>
+  );
+}
+
 const DEFAULT_LESSON_CURSORS: LessonCursorState = {
   kanji: 0,
   hiragana: 0,
@@ -189,6 +207,24 @@ const mountainImages: Record<StudyTrack, string> = {
   kanji: mountainStatusKanji,
   hiragana: mountainStatusHiragana,
   katakana: mountainStatusKatakana,
+};
+
+const mountSelectorStyles: Record<StudyTrack, { selected: string; idle: string; badge: string }> = {
+  hiragana: {
+    selected: "border-rose-500 bg-rose-50 text-rose-950",
+    idle: "border-slate-200 bg-slate-50 text-slate-900 hover:border-rose-400 hover:bg-rose-50",
+    badge: "bg-rose-100 ring-rose-300",
+  },
+  katakana: {
+    selected: "border-amber-600 bg-amber-50 text-amber-950",
+    idle: "border-slate-200 bg-slate-50 text-slate-900 hover:border-amber-500 hover:bg-amber-50",
+    badge: "bg-amber-100 ring-amber-300",
+  },
+  kanji: {
+    selected: "border-blue-600 bg-sky-50 text-blue-950",
+    idle: "border-slate-200 bg-slate-50 text-slate-900 hover:border-blue-400 hover:bg-sky-50",
+    badge: "bg-sky-100 ring-blue-300",
+  },
 };
 
 const trackConfigs: Record<
@@ -2023,23 +2059,31 @@ function App() {
                     <p className="mt-1 text-xs text-slate-600">Introductory explanations before memorization</p>
                     <p className="mt-2 text-xs font-semibold text-slate-800">{baseCampStudies.length} study available</p>
                   </button>
-                  {STUDY_TRACK_ORDER.map((track) => (
-                    <button
-                      key={track}
-                      type="button"
-                      onClick={() => switchTrack(track)}
-                      className={`w-full rounded-xl border px-3 py-3 text-left transition ${
-                        activeMount === track
-                          ? "border-cyan-600 bg-cyan-50 text-cyan-950"
-                          : "border-slate-200 bg-slate-50 text-slate-900 hover:border-cyan-400 hover:bg-cyan-50"
-                      }`}
-                    >
-                      <p className="text-sm font-semibold">{trackConfigs[track].label}</p>
-	                      <p className="mt-2 text-xs font-semibold text-slate-800">
-                        {mountProgressByTrack[track].knownCount}/{mountProgressByTrack[track].totalSteps} known
-                      </p>
-                    </button>
-                  ))}
+                  {STUDY_TRACK_ORDER.map((track) => {
+                    const selectorStyles = mountSelectorStyles[track];
+                    return (
+                      <button
+                        key={track}
+                        type="button"
+                        onClick={() => switchTrack(track)}
+                        className={`w-full rounded-xl border px-3 py-3 text-left transition ${
+                          activeMount === track ? selectorStyles.selected : selectorStyles.idle
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold">{trackConfigs[track].label}</p>
+	                            <p className="mt-2 text-xs font-semibold text-slate-800">
+                              {mountProgressByTrack[track].knownCount}/{mountProgressByTrack[track].totalSteps} known
+                            </p>
+                          </div>
+                          <span className={`inline-flex size-11 shrink-0 items-center justify-center rounded-full p-1 ring-1 ${selectorStyles.badge}`}>
+                            <img src={mountainImages[track]} alt="" aria-hidden="true" className="size-9 rounded-full object-cover shadow-sm" />
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
               </article>
 
@@ -2079,20 +2123,7 @@ function App() {
 
 	                <div className={`mt-3 grid gap-3 ${isBaseMount ? "" : "xl:grid-cols-[minmax(0,1fr)_18rem]"}`}>
 	                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-	                    <div className="flex flex-wrap items-center justify-between gap-2">
-	                      <div>
-	                        <h3 className="text-sm font-semibold text-slate-900">Choose Study</h3>
-	                        <p className="mt-1 text-xs text-slate-600">
-	                          {isBaseMount
-	                            ? "Start with explanations, then move into Hiragana when ready."
-	                            : "Studies group similar sounds or related symbols. Pick one, then start the selected study."}
-	                        </p>
-	                      </div>
-	                      <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-200">
-	                        {isBaseMount ? "intro" : currentTrackConfig.unitPlural}
-	                      </span>
-	                    </div>
-	                    <div className="mt-3 max-h-[calc(100vh-14rem)] min-h-96 space-y-2 overflow-y-auto pr-1">
+	                    <div className="max-h-[calc(100vh-14rem)] min-h-96 space-y-2 overflow-y-auto pr-1">
 	                      {isBaseMount ? (
 	                        baseCampStudies.map((study, index) => {
 	                          const isSelected = index === baseStudyIndex;
@@ -2109,20 +2140,9 @@ function App() {
 	                              <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
 	                                <p className="shrink-0 text-xs font-semibold uppercase tracking-wide text-slate-500">Intro {index + 1}</p>
 	                                <p className="min-w-0 text-sm font-bold leading-tight">{study.title}</p>
-	                                {isSelected && <span className="rounded-full bg-cyan-700 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">Selected</span>}
 	                              </div>
 	                            </button>
-	                            <button
-	                              type="button"
-	                              onClick={() => startBaseStudy(index)}
-	                              aria-label={`Start Intro ${index + 1}`}
-	                              title={`Start Intro ${index + 1}`}
-	                              className="mr-2 inline-flex size-9 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-white transition hover:bg-slate-700"
-	                            >
-	                              <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="currentColor">
-	                                <path d="M8 5v14l11-7Z" />
-	                              </svg>
-	                            </button>
+	                            {isSelected && <StudyStartButton label={`Start Intro ${index + 1}`} onClick={() => startBaseStudy(index)} />}
 	                          </article>
 	                        )})
 	                      ) : currentLessons.map((lesson, index) => {
@@ -2141,21 +2161,10 @@ function App() {
 	                                <p className="shrink-0 text-xs font-semibold text-slate-700">
 	                                  {lessonKnown}/{lesson.itemIds.length} known
 	                                </p>
-	                                {isSelected && <span className="rounded-full bg-cyan-700 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">Selected</span>}
 	                                {!isSelected && isComplete && <span className="rounded-full bg-emerald-700 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">Done</span>}
 	                              </div>
 	                            </button>
-	                            <button
-	                              type="button"
-	                              onClick={() => startLesson(index)}
-	                              aria-label={`Start Camp ${index + 1}`}
-	                              title={`Start Camp ${index + 1}`}
-	                              className="mr-2 inline-flex size-9 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-white transition hover:bg-slate-700"
-	                            >
-	                              <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="currentColor">
-	                                <path d="M8 5v14l11-7Z" />
-	                              </svg>
-	                            </button>
+	                            {isSelected && <StudyStartButton label={`Start Camp ${index + 1}`} onClick={() => startLesson(index)} />}
 	                          </article>
 	                        );
 	                      })}
