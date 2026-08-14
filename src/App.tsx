@@ -14,6 +14,7 @@ import { sumoTerms, type SumoTerm } from "./data/seed/sumoTerms";
 import {
   furiganaExamples,
   getContextExamplesForItems,
+  japaneseNumberExamples,
   kanaLore,
   kanjiLore,
   onlineLearningResources,
@@ -175,28 +176,33 @@ const DEFAULT_LESSON_CURSORS: LessonCursorState = {
 const baseCampStudies = [
   {
     id: "base_intro_001",
-    title: "Intro 1: How Japanese Writing Works",
+    title: "How Japanese Writing Works",
     focus: "Hiragana, Katakana, and Kanji work together",
   },
   {
     id: "base_intro_002",
-    title: "Intro 2: Kanji Lore",
+    title: "Kanji Lore",
     focus: "Where kanji came from and how Japan adapted Chinese characters",
   },
   {
     id: "base_intro_003",
-    title: "Intro 3: Kana Lore",
+    title: "Kana Lore",
     focus: "How Hiragana and Katakana developed from kanji sounds",
   },
   {
     id: "base_intro_004",
-    title: "Intro 4: Furigana",
+    title: "Furigana",
     focus: "Small kana that show how to pronounce kanji",
   },
   {
     id: "base_intro_005",
-    title: "Intro 5: Online References",
+    title: "Online References",
     focus: "Useful outside resources for dictionaries, kana, grammar, and reading",
+  },
+  {
+    id: "base_intro_006",
+    title: "Japanese Numbers",
+    focus: "How kanji combine to make numbers from one through one hundred",
   },
 ];
 
@@ -2324,6 +2330,59 @@ function App() {
                       </a>
                     </article>
                   ))}
+                </div>
+              </div>
+            ) : baseStudyIndex === 5 ? (
+              <div className="mt-4 rounded-2xl border border-cyan-100 bg-white p-5">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Japanese Numbers</p>
+                <p className="mt-2 max-w-3xl text-sm text-slate-700">
+                  Japanese numbers build from a small set of kanji. Put the tens first, then the ones: 二十 is two tens, and 二十一 is two tens plus one.
+                </p>
+                <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
+                  <div className="overflow-x-auto">
+                    <table className="w-auto divide-y divide-slate-200 text-sm">
+                      <thead className="bg-slate-100 text-left text-xs font-bold uppercase tracking-wide text-slate-600">
+                        <tr>
+                          <th scope="col" className="px-2 py-2 text-right">
+                            #
+                          </th>
+                          <th scope="col" className="w-28 px-2 py-2">
+                            Romaji
+                          </th>
+                          <th scope="col" className="w-20 px-2 py-2">
+                            Kanji
+                          </th>
+                          <th scope="col" className="px-2 py-2">
+                            Hiragana
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 bg-white">
+                        {japaneseNumberExamples.map((number) => (
+                          <tr key={number.value}>
+                            <td className="whitespace-nowrap px-2 py-2 text-right font-semibold text-slate-700">{number.value}</td>
+                            <td className="w-28 whitespace-nowrap px-2 py-2 text-slate-700">{number.romaji}</td>
+                            <td className="w-20 whitespace-nowrap px-2 py-2 text-2xl font-bold text-slate-900">{number.kanji}</td>
+                            <td className="whitespace-nowrap px-2 py-2 font-medium text-slate-800">{number.hiragana}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                <div className="mt-4 grid gap-3 md:grid-cols-3">
+                  <article className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <h3 className="text-sm font-bold text-slate-900">10-19</h3>
+                    <p className="mt-2 text-sm leading-relaxed text-slate-700">Start with 十, then add the ones digit: 十三 is ten plus three.</p>
+                  </article>
+                  <article className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <h3 className="text-sm font-bold text-slate-900">20-99</h3>
+                    <p className="mt-2 text-sm leading-relaxed text-slate-700">Put the multiplier before 十: 三十 is three tens. Add a final digit for numbers like 三十四.</p>
+                  </article>
+                  <article className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <h3 className="text-sm font-bold text-slate-900">100</h3>
+                    <p className="mt-2 text-sm leading-relaxed text-slate-700">百 means one hundred. Later numbers stack the same way, such as 百一 for 101.</p>
+                  </article>
                 </div>
               </div>
             ) : (

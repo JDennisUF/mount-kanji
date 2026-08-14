@@ -37,6 +37,13 @@ export interface FuriganaExample {
   note: string;
 }
 
+export interface JapaneseNumberExample {
+  value: string;
+  kanji: string;
+  hiragana: string;
+  romaji: string;
+}
+
 export interface TutorContextExample {
   id: string;
   written: string;
@@ -144,6 +151,38 @@ export const furiganaExamples: FuriganaExample[] = [
     meaning: "eat / will eat",
     note: "Furigana shows how to pronounce the kanji plus its hiragana ending as たべます (tabemasu), one complete word.",
   },
+];
+
+export const japaneseNumberExamples: JapaneseNumberExample[] = [
+  { value: "1", kanji: "一", hiragana: "いち", romaji: "ichi" },
+  { value: "2", kanji: "二", hiragana: "に", romaji: "ni" },
+  { value: "3", kanji: "三", hiragana: "さん", romaji: "san" },
+  { value: "4", kanji: "四", hiragana: "よん", romaji: "yon" },
+  { value: "5", kanji: "五", hiragana: "ご", romaji: "go" },
+  { value: "6", kanji: "六", hiragana: "ろく", romaji: "roku" },
+  { value: "7", kanji: "七", hiragana: "なな", romaji: "nana" },
+  { value: "8", kanji: "八", hiragana: "はち", romaji: "hachi" },
+  { value: "9", kanji: "九", hiragana: "きゅう", romaji: "kyuu" },
+  { value: "10", kanji: "十", hiragana: "じゅう", romaji: "juu" },
+  { value: "11", kanji: "十一", hiragana: "じゅういち", romaji: "juuichi" },
+  { value: "12", kanji: "十二", hiragana: "じゅうに", romaji: "juuni" },
+  { value: "13", kanji: "十三", hiragana: "じゅうさん", romaji: "juusan" },
+  { value: "14", kanji: "十四", hiragana: "じゅうよん", romaji: "juuyon" },
+  { value: "15", kanji: "十五", hiragana: "じゅうご", romaji: "juugo" },
+  { value: "16", kanji: "十六", hiragana: "じゅうろく", romaji: "juuroku" },
+  { value: "17", kanji: "十七", hiragana: "じゅうなな", romaji: "juunana" },
+  { value: "18", kanji: "十八", hiragana: "じゅうはち", romaji: "juuhachi" },
+  { value: "19", kanji: "十九", hiragana: "じゅうきゅう", romaji: "juukyuu" },
+  { value: "20", kanji: "二十", hiragana: "にじゅう", romaji: "nijuu" },
+  { value: "21", kanji: "二十一", hiragana: "にじゅういち", romaji: "nijuuichi" },
+  { value: "30", kanji: "三十", hiragana: "さんじゅう", romaji: "sanjuu" },
+  { value: "40", kanji: "四十", hiragana: "よんじゅう", romaji: "yonjuu" },
+  { value: "50", kanji: "五十", hiragana: "ごじゅう", romaji: "gojuu" },
+  { value: "60", kanji: "六十", hiragana: "ろくじゅう", romaji: "rokujuu" },
+  { value: "70", kanji: "七十", hiragana: "ななじゅう", romaji: "nanajuu" },
+  { value: "80", kanji: "八十", hiragana: "はちじゅう", romaji: "hachijuu" },
+  { value: "90", kanji: "九十", hiragana: "きゅうじゅう", romaji: "kyuujuu" },
+  { value: "100", kanji: "百", hiragana: "ひゃく", romaji: "hyaku" },
 ];
 
 export const onlineLearningResources: OnlineLearningResource[] = [
