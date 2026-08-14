@@ -23,6 +23,7 @@ import {
 } from "./data/seed/tutorContent";
 import { createProgressRepository } from "./repositories/progressRepositoryFactory";
 import type { ProgressRepository } from "./repositories/progressRepository";
+import { parseAppRoute, serializeAppRoute, type AppRoute } from "./routing/appRoute";
 import type { HandwritingStroke } from "./services/handwritingVerifier";
 import { KNOWN_CORRECT_THRESHOLD, ReviewTracker, resolveStudyStatus } from "./services/reviewTracker";
 import { applyTutorAttempt, buildTutorFeedback, type TutorFeedback } from "./services/tutorEngine";
@@ -957,6 +958,9 @@ function verifyHandwritingAgainstGlyph(character: string, strokes: HandwritingSt
 
 function App() {
   const audioContextRef = useRef<AudioContext | null>(null);
+  const isApplyingRouteRef = useRef(false);
+  const hasAppliedInitialRouteRef = useRef(false);
+  const skipDictionaryResetRef = useRef(false);
   const [screen, setScreen] = useState<Screen>("dashboard");
   const [activeMount, setActiveMount] = useState<MountSelection>("base");
   const [baseStudyIndex, setBaseStudyIndex] = useState(0);
@@ -1111,6 +1115,11 @@ function App() {
   }, [settings]);
 
   useEffect(() => {
+    if (skipDictionaryResetRef.current) {
+      skipDictionaryResetRef.current = false;
+      return;
+    }
+
     setDictionaryQuery("");
     setDictionaryRadical("all");
     setDictionarySumoOnly(false);
@@ -1226,11 +1235,13 @@ function App() {
   }, [currentPool]);
 
   function toggleDictionaryTag(tag: string) {
-    setSelectedDictionaryTags((previous) =>
-      previous.includes(tag)
+    setSelectedDictionaryTags((previous) => {
+      const nextTags = previous.includes(tag)
         ? previous.filter((selectedTag) => selectedTag !== tag)
-        : [...previous, tag],
-    );
+        : [...previous, tag];
+      writeDictionaryRoute({ tags: nextTags });
+      return nextTags;
+    });
   }
 
   const filteredDictionaryItems = useMemo(() => {
@@ -1374,7 +1385,263 @@ function App() {
     return [...uniqueItems, ...fallbackItems].slice(0, CONCENTRATION_PAIR_COUNT);
   }
 
+  function buildRouteLessonSession(track: StudyTrack, campIndex: number) {
+    const config = trackConfigs[track];
+    const lessons = config.lessons;
+    const clampedCampIndex = clamp(campIndex, 0, Math.max(0, lessons.length - 1));
+    const lessonDefinition = lessons[clampedCampIndex];
+    const trailItems = config.pool.filter((item) => !(progressByItem[item.id]?.excludedFromLessons ?? false));
+    const pendingItems = trailItems.filter((item) => getProgressStatus(progressByItem[item.id], settings.correctAnswersToKnown) !== "known");
+    const eligibleItems = settings.includeKnownInLessons ? trailItems : pendingItems;
+
+    if (eligibleItems.length === 0) {
+      return null;
+    }
+
+    const baseLessonItems =
+      lessonDefinition?.itemIds
+        .map((itemId) => itemById.get(itemId))
+        .filter((item): item is StudyItem => Boolean(item))
+        .filter((item) => !(progressByItem[item.id]?.excludedFromLessons ?? false))
+        .filter((item) => settings.includeKnownInLessons || getProgressStatus(progressByItem[item.id], settings.correctAnswersToKnown) !== "known") ?? [];
+
+    const revisitRows = reviewTracker
+      .getQueue(
+        trailItems
+          .filter((item) => {
+            const progress = progressByItem[item.id] ?? createDefaultProgress(item.id);
+            return progress.correctCount + progress.incorrectCount > 0 && getProgressStatus(progress, settings.correctAnswersToKnown) !== "known";
+          })
+          .map((item) => progressByItem[item.id] ?? createDefaultProgress(item.id)),
+        settings.correctAnswersToKnown,
+      )
+      .slice(0, Math.max(REVISIT_INSERTS, baseLessonItems.length === 0 ? 5 : REVISIT_INSERTS));
+
+    const picked: StudyItem[] = [];
+    for (const row of revisitRows) {
+      const item = itemById.get(row.itemId);
+      if (item && !picked.some((candidate) => candidate.id === item.id)) {
+        picked.push(item);
+      }
+    }
+
+    for (const item of baseLessonItems) {
+      if (!picked.some((candidate) => candidate.id === item.id)) {
+        picked.push(item);
+      }
+    }
+
+    const lessonSegment = picked.length === 0 ? eligibleItems.slice(0, Math.min(5, eligibleItems.length)) : picked;
+    if (lessonSegment.length === 0) {
+      return null;
+    }
+
+    return {
+      campIndex: clampedCampIndex,
+      title: lessonDefinition?.title ?? `${config.label} Lesson`,
+      items: lessonSegment,
+      eligibleItems,
+      trailItems,
+    };
+  }
+
+  function writeRoute(route: AppRoute, mode: "push" | "replace" = "push") {
+    if (isApplyingRouteRef.current) {
+      return;
+    }
+
+    const nextUrl = serializeAppRoute(route);
+    const currentUrl = `${window.location.search}${window.location.hash}`;
+    if (currentUrl === nextUrl) {
+      return;
+    }
+
+    window.history[mode === "push" ? "pushState" : "replaceState"](null, "", nextUrl);
+  }
+
+  function writeDictionaryRoute(
+    overrides: Partial<{ q: string; radical: string; sumoOnly: boolean; tags: string[] }> = {},
+    mode: "push" | "replace" = "replace",
+  ) {
+    const nextQuery = overrides.q ?? dictionaryQuery;
+    const nextRadical = overrides.radical ?? dictionaryRadical;
+    const nextSumoOnly = overrides.sumoOnly ?? dictionarySumoOnly;
+    const nextTags = overrides.tags ?? selectedDictionaryTags;
+
+    writeRoute(
+      {
+        screen: "dictionary",
+        mount: activeTrack,
+        q: nextQuery.trim() || undefined,
+        radical: activeTrack === "kanji" && nextRadical !== "all" ? nextRadical : undefined,
+        sumoOnly: activeTrack === "kanji" && nextSumoOnly ? true : undefined,
+        tags: nextTags.length > 0 ? nextTags : undefined,
+      },
+      mode,
+    );
+  }
+
+  function writeSumoRoute(overrides: Partial<{ q: string; category: SumoCategoryFilter }> = {}, mode: "push" | "replace" = "replace") {
+    const nextQuery = overrides.q ?? sumoQuery;
+    const nextCategory = overrides.category ?? sumoCategory;
+    writeRoute(
+      {
+        screen: "sumo",
+        q: nextQuery.trim() || undefined,
+        category: nextCategory === "all" ? undefined : nextCategory,
+      },
+      mode,
+    );
+  }
+
+  function currentDashboardRoute(): AppRoute {
+    return activeMount === "base"
+      ? { screen: "dashboard", mount: "base", intro: baseStudyIndex + 1 }
+      : { screen: "dashboard", mount: activeTrack, camp: currentLessonCursor + 1 };
+  }
+
+  function resetRouteSessionState() {
+    setLessonIndex(0);
+    setQuizIndex(0);
+    setHandwritingIndex(0);
+    setContextIndex(0);
+    setQuizScore(0);
+    setDashboardMessage("");
+    setAnswerFeedback(null);
+    setMatchingFeedback({ tone: "idle", message: "" });
+    setConcentrationFeedback({ tone: "idle", message: "" });
+    setHandwritingFeedback({ tone: "idle", message: "", score: 0 });
+    setHandwritingStrokes([]);
+    setActiveHandwritingStroke(null);
+    setShowHandwritingGuide(false);
+    setSelectedMatchingItemId(null);
+    setMatchedItemIds([]);
+    setIncorrectMatchItemIds([]);
+    setFlippedCardIds([]);
+    setConcentrationMatchedItemIds([]);
+    setIsResolvingConcentrationTurn(false);
+    setSessionMissedItemIds([]);
+    setKnownEvent(null);
+  }
+
+  function applyRoute(route: AppRoute) {
+    isApplyingRouteRef.current = true;
+
+    if (route.screen === "dashboard") {
+      resetRouteSessionState();
+      if (route.mount === "base") {
+        setActiveMount("base");
+        if (route.intro) {
+          setBaseStudyIndex(clamp(route.intro - 1, 0, Math.max(0, baseCampStudies.length - 1)));
+        }
+      } else {
+        setActiveMount(route.mount);
+        setActiveTrack(route.mount);
+        if (route.camp) {
+          const campIndex = clamp(route.camp - 1, 0, Math.max(0, trackConfigs[route.mount].lessons.length - 1));
+          setLessonCursorByTrack((previous) => ({ ...previous, [route.mount]: campIndex }));
+        }
+      }
+      setScreen("dashboard");
+    } else if (route.screen === "baseStudy") {
+      resetRouteSessionState();
+      setActiveMount("base");
+      setBaseStudyIndex(clamp(route.intro - 1, 0, Math.max(0, baseCampStudies.length - 1)));
+      setScreen("baseStudy");
+    } else if (route.screen === "lesson") {
+      const session = buildRouteLessonSession(route.mount, route.camp - 1);
+      if (!session) {
+        setActiveMount(route.mount);
+        setActiveTrack(route.mount);
+        setScreen("dashboard");
+        setDashboardMessage(`No eligible ${trackConfigs[route.mount].unitPlural} are available for this trail segment.`);
+      } else {
+        resetRouteSessionState();
+        setActiveMount(route.mount);
+        setActiveTrack(route.mount);
+        setLessonCursorByTrack((previous) => ({ ...previous, [route.mount]: session.campIndex }));
+        setActiveLessonItems(session.items);
+        setActiveLessonTitle(session.title);
+        setLessonIndex(clamp(route.step - 1, 0, Math.max(0, session.items.length - 1)));
+        setContextExamples(
+          getContextExamplesForItems(
+            session.items,
+            3,
+            session.trailItems.filter(
+              (item) =>
+                session.items.some((lessonItem) => lessonItem.id === item.id) ||
+                getProgressStatus(progressByItem[item.id], settings.correctAnswersToKnown) === "known",
+            ),
+          ),
+        );
+        setQuizQuestions(buildQuestionsForMode(session.items, session.eligibleItems, settings.quizMode));
+        setScreen("lesson");
+      }
+    } else if (route.screen === "quiz" || route.screen === "context" || route.screen === "summary") {
+      const session = buildRouteLessonSession(route.mount, route.camp - 1);
+      resetRouteSessionState();
+      setActiveMount(route.mount);
+      setActiveTrack(route.mount);
+      setLessonCursorByTrack((previous) => ({ ...previous, [route.mount]: session?.campIndex ?? route.camp - 1 }));
+      if (session) {
+        setActiveLessonItems(session.items);
+        setActiveLessonTitle(session.title);
+      }
+      setScreen("dashboard");
+    } else if (route.screen === "dictionary") {
+      resetRouteSessionState();
+      skipDictionaryResetRef.current = true;
+      setActiveMount(route.mount);
+      setActiveTrack(route.mount);
+      setDictionaryQuery(route.q ?? "");
+      setDictionaryRadical(route.mount === "kanji" ? route.radical ?? "all" : "all");
+      setDictionarySumoOnly(route.mount === "kanji" ? route.sumoOnly ?? false : false);
+      setSelectedDictionaryTags(route.tags ?? []);
+      setShowDictionaryTags((route.tags?.length ?? 0) > 0);
+      setSelectedItemId(trackConfigs[route.mount].pool[0]?.id ?? "");
+      setScreen("dictionary");
+    } else if (route.screen === "progress") {
+      resetRouteSessionState();
+      if (route.mount) {
+        setActiveMount(route.mount);
+        setActiveTrack(route.mount);
+      }
+      setScreen("progress");
+    } else if (route.screen === "sumo") {
+      resetRouteSessionState();
+      setSumoQuery(route.q ?? "");
+      setSumoCategory((route.category ?? "all") as SumoCategoryFilter);
+      setScreen("sumo");
+    } else if (route.screen === "settings") {
+      resetRouteSessionState();
+      setScreen("settings");
+    }
+
+    window.setTimeout(() => {
+      isApplyingRouteRef.current = false;
+    }, 0);
+  }
+
+  useEffect(() => {
+    if (!isProgressHydrated || hasAppliedInitialRouteRef.current) {
+      return;
+    }
+
+    hasAppliedInitialRouteRef.current = true;
+    applyRoute(parseAppRoute(window.location.search));
+  }, [isProgressHydrated]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      applyRoute(parseAppRoute(window.location.search));
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  });
+
   function switchTrack(track: StudyTrack) {
+    writeRoute({ screen: "dashboard", mount: track, camp: (lessonCursorByTrack[track] ?? 0) + 1 });
     setActiveMount(track);
     setActiveTrack(track);
     setScreen("dashboard");
@@ -1402,6 +1669,7 @@ function App() {
   }
 
   function switchToBaseCamp() {
+    writeRoute({ screen: "dashboard", mount: "base", intro: baseStudyIndex + 1 });
     setActiveMount("base");
     setScreen("dashboard");
     setLessonIndex(0);
@@ -1428,9 +1696,11 @@ function App() {
   }
 
   function selectLessonCamp(index: number) {
+    const clampedIndex = clamp(index, 0, Math.max(0, currentLessons.length - 1));
+    writeRoute({ screen: "dashboard", mount: activeTrack, camp: clampedIndex + 1 }, "replace");
     setLessonCursorByTrack((previous) => ({
       ...previous,
-      [activeTrack]: clamp(index, 0, Math.max(0, currentLessons.length - 1)),
+      [activeTrack]: clampedIndex,
     }));
     setDashboardMessage("");
   }
@@ -1473,6 +1743,7 @@ function App() {
     }
 
     setDashboardMessage("");
+    writeRoute({ screen: "lesson", mount: activeTrack, camp: lessonIndex + 1, step: 1 });
     setLessonCursorByTrack((previous) => ({
       ...previous,
       [activeTrack]: lessonIndex,
@@ -1568,7 +1839,9 @@ function App() {
   }
 
   function startBaseStudy(index: number) {
-    setBaseStudyIndex(clamp(index, 0, Math.max(0, baseCampStudies.length - 1)));
+    const clampedIndex = clamp(index, 0, Math.max(0, baseCampStudies.length - 1));
+    writeRoute({ screen: "baseStudy", mount: "base", intro: clampedIndex + 1 });
+    setBaseStudyIndex(clampedIndex);
     setScreen("baseStudy");
     setDashboardMessage("");
   }
@@ -1641,6 +1914,7 @@ function App() {
       return;
     }
 
+    writeRoute({ screen: "lesson", mount: activeTrack, camp: currentLessonCursor + 1, step: lessonIndex + 2 }, "replace");
     setLessonIndex((value) => value + 1);
   }
 
@@ -1947,6 +2221,7 @@ function App() {
   }
 
   function returnToDashboard() {
+    writeRoute(currentDashboardRoute());
     setScreen("dashboard");
     setLessonIndex(0);
     setQuizIndex(0);
@@ -2008,7 +2283,10 @@ function App() {
 	              )}
 	              <button
 	                type="button"
-	                onClick={() => setScreen("progress")}
+	                onClick={() => {
+                    writeRoute({ screen: "progress", mount: activeTrack });
+                    setScreen("progress");
+                  }}
 	                aria-label="Progress"
 	                title="Progress"
 	                className="inline-flex size-11 items-center justify-center rounded-xl border border-emerald-700 bg-emerald-50 text-emerald-900 shadow-sm transition hover:bg-emerald-100"
@@ -2017,7 +2295,10 @@ function App() {
 	              </button>
 	              <button
 	                type="button"
-	                onClick={() => setScreen("sumo")}
+	                onClick={() => {
+                    writeRoute({ screen: "sumo", q: sumoQuery || undefined, category: sumoCategory === "all" ? undefined : sumoCategory });
+                    setScreen("sumo");
+                  }}
 	                aria-label="Heya"
 	                title="Heya"
 	                className="inline-flex size-11 items-center justify-center rounded-xl border border-amber-700 bg-amber-50 text-amber-900 shadow-sm transition hover:bg-amber-100"
@@ -2031,7 +2312,10 @@ function App() {
 	              </button>
 	              <button
 	                type="button"
-	                onClick={() => setScreen("settings")}
+	                onClick={() => {
+                    writeRoute({ screen: "settings" });
+                    setScreen("settings");
+                  }}
 	                aria-label="Settings"
                 title="Settings"
                 className="inline-flex size-11 items-center justify-center rounded-xl border border-violet-700 bg-violet-50 text-violet-900 shadow-sm transition hover:bg-violet-100"
@@ -2120,7 +2404,14 @@ function App() {
                       </button>
                     )}
                     {!isBaseMount && (
-                      <button type="button" onClick={() => setScreen("dictionary")} className="rounded-xl border border-cyan-700 bg-cyan-50 px-4 py-2 text-sm font-semibold text-cyan-900 transition hover:bg-cyan-100">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          writeRoute({ screen: "dictionary", mount: activeTrack });
+                          setScreen("dictionary");
+                        }}
+                        className="rounded-xl border border-cyan-700 bg-cyan-50 px-4 py-2 text-sm font-semibold text-cyan-900 transition hover:bg-cyan-100"
+                      >
                         {activeTrack === "kanji" ? "Dictionary" : "Reference Chart"}
                       </button>
                     )}
@@ -2142,7 +2433,14 @@ function App() {
 	                                : "border-slate-200 bg-white text-slate-900 hover:border-cyan-300 hover:bg-cyan-50"
 	                            }`}
 	                          >
-	                            <button type="button" onClick={() => setBaseStudyIndex(index)} className="min-w-0 flex-1 px-3 py-2 text-left">
+	                            <button
+                                  type="button"
+                                  onClick={() => {
+                                    setBaseStudyIndex(index);
+                                    writeRoute({ screen: "dashboard", mount: "base", intro: index + 1 }, "replace");
+                                  }}
+                                  className="min-w-0 flex-1 px-3 py-2 text-left"
+                                >
 	                              <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
 	                                <p className="shrink-0 text-xs font-semibold uppercase tracking-wide text-slate-500">Intro {index + 1}</p>
 	                                <p className="min-w-0 text-sm font-bold leading-tight">{study.title}</p>
@@ -2918,7 +3216,14 @@ function App() {
               <button type="button" onClick={returnToDashboard} className="rounded-full bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition hover:bg-slate-700">
                 Back To Base Camp
               </button>
-              <button type="button" onClick={() => setScreen("progress")} className="rounded-full bg-emerald-700 px-5 py-2 text-sm font-semibold text-white transition hover:bg-emerald-600">
+              <button
+                type="button"
+                onClick={() => {
+                  writeRoute({ screen: "progress", mount: activeTrack });
+                  setScreen("progress");
+                }}
+                className="rounded-full bg-emerald-700 px-5 py-2 text-sm font-semibold text-white transition hover:bg-emerald-600"
+              >
                 View Progress
               </button>
 	              <button type="button" onClick={() => startLesson()} className="rounded-full bg-cyan-700 px-5 py-2 text-sm font-semibold text-white transition hover:bg-cyan-600">
@@ -2945,12 +3250,23 @@ function App() {
                 type="text"
                 value={sumoQuery}
                 onChange={(event) => setSumoQuery(event.currentTarget.value)}
+                onBlur={(event) => writeSumoRoute({ q: event.currentTarget.value })}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    writeSumoRoute({ q: event.currentTarget.value });
+                    event.currentTarget.blur();
+                  }
+                }}
                 placeholder="Search by term, reading, or meaning"
                 className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-amber-400 focus:ring-2 md:col-span-2"
               />
               <select
                 value={sumoCategory}
-                onChange={(event) => setSumoCategory(event.currentTarget.value as SumoCategoryFilter)}
+                onChange={(event) => {
+                  const category = event.currentTarget.value as SumoCategoryFilter;
+                  setSumoCategory(category);
+                  writeSumoRoute({ category });
+                }}
                 className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-amber-400 focus:ring-2"
               >
                 <option value="all">All categories</option>
@@ -3004,6 +3320,13 @@ function App() {
 		                type="text"
 		                value={dictionaryQuery}
 		                onChange={(event) => setDictionaryQuery(event.currentTarget.value)}
+                    onBlur={(event) => writeDictionaryRoute({ q: event.currentTarget.value })}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        writeDictionaryRoute({ q: event.currentTarget.value });
+                        event.currentTarget.blur();
+                      }
+                    }}
 		                placeholder={activeTrack === "kanji" ? "Search by kanji, meaning, or reading" : "Search by kana, romaji, row, or tag"}
 		                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-cyan-400 focus:ring-2"
 		              />
@@ -3011,7 +3334,10 @@ function App() {
 	                <>
                   <select
                     value={dictionaryRadical}
-                    onChange={(event) => setDictionaryRadical(event.currentTarget.value)}
+                    onChange={(event) => {
+                      setDictionaryRadical(event.currentTarget.value);
+                      writeDictionaryRoute({ radical: event.currentTarget.value });
+                    }}
                     className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-cyan-400 focus:ring-2"
                   >
                     <option value="all">All radicals</option>
@@ -3022,7 +3348,15 @@ function App() {
                     ))}
                   </select>
                   <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700">
-                    <input type="checkbox" checked={dictionarySumoOnly} onChange={(event) => setDictionarySumoOnly(event.currentTarget.checked)} className="h-4 w-4 accent-cyan-700" />
+                    <input
+                      type="checkbox"
+                      checked={dictionarySumoOnly}
+                      onChange={(event) => {
+                        setDictionarySumoOnly(event.currentTarget.checked);
+                        writeDictionaryRoute({ sumoOnly: event.currentTarget.checked });
+                      }}
+                      className="h-4 w-4 accent-cyan-700"
+                    />
                     Sumo only
                   </label>
                 </>
@@ -3044,7 +3378,10 @@ function App() {
 	              {selectedDictionaryTags.length > 0 && (
 	                <button
 	                  type="button"
-	                  onClick={() => setSelectedDictionaryTags([])}
+	                  onClick={() => {
+                      setSelectedDictionaryTags([]);
+                      writeDictionaryRoute({ tags: [] });
+                    }}
 	                  className="rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold text-white transition hover:bg-slate-700"
 	                >
 	                  Clear
