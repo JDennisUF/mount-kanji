@@ -183,6 +183,8 @@ export const japaneseNumberExamples: JapaneseNumberExample[] = [
   { value: "80", kanji: "八十", hiragana: "はちじゅう", romaji: "hachijuu" },
   { value: "90", kanji: "九十", hiragana: "きゅうじゅう", romaji: "kyuujuu" },
   { value: "100", kanji: "百", hiragana: "ひゃく", romaji: "hyaku" },
+  { value: "1,000", kanji: "千", hiragana: "せん", romaji: "sen" },
+  { value: "10,000", kanji: "万", hiragana: "まん", romaji: "man" },
 ];
 
 export const onlineLearningResources: OnlineLearningResource[] = [
