@@ -5,13 +5,13 @@ export type RouteScreen = "dashboard" | "baseStudy" | "lesson" | "quiz" | "handw
 export type RouteSumoCategory = "all" | "basics" | "events" | "ranks" | "match" | "record";
 
 export type AppRoute =
-  | { screen: "dashboard"; mount: RouteMount; camp?: number; intro?: number }
+  | { screen: "dashboard"; mount: RouteMount; camp?: number; camps?: number[]; intro?: number }
   | { screen: "baseStudy"; mount: "base"; intro: number }
-  | { screen: "lesson"; mount: StudyTrack; camp: number; step: number }
-  | { screen: "quiz"; mount: StudyTrack; camp: number; q: number }
+  | { screen: "lesson"; mount: StudyTrack; camp: number; camps?: number[]; step: number }
+  | { screen: "quiz"; mount: StudyTrack; camp: number; camps?: number[]; q: number }
   | { screen: "handwriting"; mount: "hiragana" | "katakana"; camp: number; step: number }
-  | { screen: "context"; mount: StudyTrack; camp: number; step: number }
-  | { screen: "summary"; mount: StudyTrack; camp: number }
+  | { screen: "context"; mount: StudyTrack; camp: number; camps?: number[]; step: number }
+  | { screen: "summary"; mount: StudyTrack; camp: number; camps?: number[] }
   | { screen: "dictionary"; mount: StudyTrack; q?: string; radical?: string; sumoOnly?: boolean; tags?: string[] }
   | { screen: "progress"; mount?: StudyTrack }
   | { screen: "sumo"; q?: string; category?: RouteSumoCategory }
@@ -38,6 +38,19 @@ function parsePositiveInteger(value: string | null, fallback = 1): number {
 
 function parseOptionalPositiveInteger(value: string | null): number | undefined {
   return value === null ? undefined : parsePositiveInteger(value);
+}
+
+function parsePositiveIntegers(value: string | null): number[] | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const values = value
+    .split(",")
+    .map((entry) => parsePositiveInteger(entry.trim(), 0))
+    .filter((entry) => entry >= 1);
+  const uniqueValues = Array.from(new Set(values));
+  return uniqueValues.length > 0 ? uniqueValues : undefined;
 }
 
 function parseMount(value: string | null): RouteMount {
@@ -81,6 +94,7 @@ export function parseAppRoute(search: string): AppRoute {
         screen: "lesson",
         mount: parseStudyTrack(params.get("mount")),
         camp: parsePositiveInteger(params.get("camp")),
+        camps: parsePositiveIntegers(params.get("camp")),
         step: parsePositiveInteger(params.get("step")),
       };
     case "quiz":
@@ -88,6 +102,7 @@ export function parseAppRoute(search: string): AppRoute {
         screen: "quiz",
         mount: parseStudyTrack(params.get("mount")),
         camp: parsePositiveInteger(params.get("camp")),
+        camps: parsePositiveIntegers(params.get("camp")),
         q: parsePositiveInteger(params.get("q")),
       };
     case "handwriting": {
@@ -104,6 +119,7 @@ export function parseAppRoute(search: string): AppRoute {
         screen: "context",
         mount: parseStudyTrack(params.get("mount")),
         camp: parsePositiveInteger(params.get("camp")),
+        camps: parsePositiveIntegers(params.get("camp")),
         step: parsePositiveInteger(params.get("step")),
       };
     case "summary":
@@ -111,6 +127,7 @@ export function parseAppRoute(search: string): AppRoute {
         screen: "summary",
         mount: parseStudyTrack(params.get("mount")),
         camp: parsePositiveInteger(params.get("camp")),
+        camps: parsePositiveIntegers(params.get("camp")),
       };
     case "dictionary":
       return {
@@ -144,6 +161,7 @@ export function parseAppRoute(search: string): AppRoute {
         screen: "dashboard",
         mount,
         camp: parseOptionalPositiveInteger(params.get("camp")),
+        camps: parsePositiveIntegers(params.get("camp")),
         intro: parseOptionalPositiveInteger(params.get("intro")),
       };
     default:
@@ -160,7 +178,7 @@ export function serializeAppRoute(route: AppRoute): string {
       if (route.mount === "base") {
         setIfPresent(params, "intro", route.intro);
       } else {
-        setIfPresent(params, "camp", route.camp);
+        setIfPresent(params, "camp", route.camps && route.camps.length > 0 ? route.camps.join(",") : route.camp);
       }
       break;
     case "baseStudy":
@@ -171,13 +189,13 @@ export function serializeAppRoute(route: AppRoute): string {
     case "lesson":
       params.set("mount", route.mount);
       params.set("screen", "lesson");
-      params.set("camp", `${route.camp}`);
+      params.set("camp", route.camps && route.camps.length > 0 ? route.camps.join(",") : `${route.camp}`);
       params.set("step", `${route.step}`);
       break;
     case "quiz":
       params.set("mount", route.mount);
       params.set("screen", "quiz");
-      params.set("camp", `${route.camp}`);
+      params.set("camp", route.camps && route.camps.length > 0 ? route.camps.join(",") : `${route.camp}`);
       params.set("q", `${route.q}`);
       break;
     case "handwriting":
@@ -189,13 +207,13 @@ export function serializeAppRoute(route: AppRoute): string {
     case "context":
       params.set("mount", route.mount);
       params.set("screen", "context");
-      params.set("camp", `${route.camp}`);
+      params.set("camp", route.camps && route.camps.length > 0 ? route.camps.join(",") : `${route.camp}`);
       params.set("step", `${route.step}`);
       break;
     case "summary":
       params.set("mount", route.mount);
       params.set("screen", "summary");
-      params.set("camp", `${route.camp}`);
+      params.set("camp", route.camps && route.camps.length > 0 ? route.camps.join(",") : `${route.camp}`);
       break;
     case "dictionary":
       params.set("mount", route.mount);
@@ -224,5 +242,5 @@ export function serializeAppRoute(route: AppRoute): string {
   }
 
   const serialized = params.toString();
-  return serialized ? `?${serialized}` : "";
+  return serialized ? `?${serialized.replace(/%2C/g, ",")}` : "";
 }

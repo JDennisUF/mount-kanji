@@ -16,6 +16,7 @@ describe("app route utilities", () => {
       screen: "lesson",
       mount: "hiragana",
       camp: 1,
+      camps: undefined,
       step: 1,
     });
   });
@@ -54,5 +55,18 @@ describe("app route utilities", () => {
 
   it("serializes one-based lesson indexes", () => {
     expect(serializeAppRoute({ screen: "lesson", mount: "katakana", camp: 3, step: 2 })).toBe("?mount=katakana&screen=lesson&camp=3&step=2");
+  });
+
+  it("round-trips multiple selected camps", () => {
+    const route = parseAppRoute("?mount=hiragana&screen=lesson&camp=2,3&step=1");
+
+    expect(route).toEqual({
+      screen: "lesson",
+      mount: "hiragana",
+      camp: 2,
+      camps: [2, 3],
+      step: 1,
+    });
+    expect(serializeAppRoute(route)).toBe("?mount=hiragana&screen=lesson&camp=2,3&step=1");
   });
 });

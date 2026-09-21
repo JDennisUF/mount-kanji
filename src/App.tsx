@@ -109,6 +109,7 @@ interface AppSettings {
   showFurigana: boolean;
   showRomaji: boolean;
   includeKnownInLessons: boolean;
+  maxQuestionsPerLesson: number;
   correctAnswersToKnown: number;
   reducedMotion: boolean;
   textScale: TextScale;
@@ -117,13 +118,17 @@ interface AppSettings {
 }
 
 type LessonCursorState = Record<StudyTrack, number>;
+type LessonSelectionState = Record<StudyTrack, number[]>;
 
 const LESSON_CURSOR_STORAGE_KEY = "mount-kanji-lesson-cursor-v2";
+const SELECTED_LESSON_CAMPS_STORAGE_KEY = "mount-kanji-selected-lesson-camps-v1";
 const SETTINGS_STORAGE_KEY = "mount-kanji-settings";
-const REVISIT_INSERTS = 2;
+const DEFAULT_MAX_QUESTIONS_PER_LESSON = 8;
 const MATCHING_BOARD_SIZE = 5;
+const MATCHING_MIN_PAIR_COUNT = 2;
 const CONCENTRATION_GRID_SIZE = 16;
 const CONCENTRATION_PAIR_COUNT = CONCENTRATION_GRID_SIZE / 2;
+const CONCENTRATION_MIN_PAIR_COUNT = 2;
 const HANDWRITING_TRAIL_TRACKS = new Set<StudyTrack>(["hiragana", "katakana"]);
 const HANDWRITING_RASTER_SIZE = 256;
 const HANDWRITING_GUIDE_FONT_STACK = `"BIZ UDPGothic", "Hiragino Sans", "Yu Gothic", "Meiryo", sans-serif`;
@@ -141,6 +146,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   showFurigana: true,
   showRomaji: false,
   includeKnownInLessons: false,
+  maxQuestionsPerLesson: DEFAULT_MAX_QUESTIONS_PER_LESSON,
   correctAnswersToKnown: KNOWN_CORRECT_THRESHOLD,
   reducedMotion: false,
   textScale: 100,
@@ -172,6 +178,12 @@ const DEFAULT_LESSON_CURSORS: LessonCursorState = {
   kanji: 0,
   hiragana: 0,
   katakana: 0,
+};
+
+const DEFAULT_LESSON_SELECTIONS: LessonSelectionState = {
+  kanji: [0],
+  hiragana: [0],
+  katakana: [0],
 };
 
 const baseCampStudies = [
@@ -333,6 +345,27 @@ function clamp(value: number, minimum: number, maximum: number): number {
 
 function normalizeCorrectAnswersToKnown(value: unknown): number {
   return clamp(Number.isFinite(value) ? Math.floor(value as number) : KNOWN_CORRECT_THRESHOLD, 1, 20);
+}
+
+function normalizeMaxQuestionsPerLesson(value: unknown): number {
+  return clamp(Number.isFinite(value) ? Math.floor(value as number) : DEFAULT_MAX_QUESTIONS_PER_LESSON, 1, 50);
+}
+
+function normalizeLessonCampIndexes(track: StudyTrack, indexes: number[]): number[] {
+  const maximumIndex = Math.max(0, trackConfigs[track].lessons.length - 1);
+  const normalized = indexes
+    .filter((index) => Number.isFinite(index))
+    .map((index) => clamp(Math.floor(index), 0, maximumIndex));
+
+  return Array.from(new Set(normalized)).sort((a, b) => a - b);
+}
+
+function normalizeLessonCampNumbers(track: StudyTrack, camps: number[] | undefined, fallbackIndex = 0): number[] {
+  return normalizeLessonCampIndexes(track, camps && camps.length > 0 ? camps.map((camp) => camp - 1) : [fallbackIndex]);
+}
+
+function campIndexesToNumbers(indexes: number[]): number[] {
+  return indexes.map((index) => index + 1);
 }
 
 function createDefaultProgress(itemId: string): UserStudyProgress {
@@ -995,10 +1028,11 @@ function App() {
     }
 
     try {
-      const parsed = JSON.parse(serialized) as Partial<AppSettings>;
+      const parsed = JSON.parse(serialized) as Partial<AppSettings> & { maxQuestionsPerCamp?: unknown };
       return {
         ...DEFAULT_SETTINGS,
         ...parsed,
+        maxQuestionsPerLesson: normalizeMaxQuestionsPerLesson(parsed.maxQuestionsPerLesson ?? parsed.maxQuestionsPerCamp),
         correctAnswersToKnown: normalizeCorrectAnswersToKnown(parsed.correctAnswersToKnown),
       };
     } catch {
@@ -1038,6 +1072,37 @@ function App() {
     } catch {
       return DEFAULT_LESSON_CURSORS;
     }
+  });
+  const [selectedLessonCampIndexesByTrack, setSelectedLessonCampIndexesByTrack] = useState<LessonSelectionState>(() => {
+    const serialized = window.localStorage.getItem(SELECTED_LESSON_CAMPS_STORAGE_KEY);
+    if (serialized) {
+      try {
+        const parsed = JSON.parse(serialized) as Partial<Record<StudyTrack, unknown>>;
+        return {
+          kanji: normalizeLessonCampIndexes("kanji", Array.isArray(parsed.kanji) ? parsed.kanji.map(Number) : DEFAULT_LESSON_SELECTIONS.kanji),
+          hiragana: normalizeLessonCampIndexes("hiragana", Array.isArray(parsed.hiragana) ? parsed.hiragana.map(Number) : DEFAULT_LESSON_SELECTIONS.hiragana),
+          katakana: normalizeLessonCampIndexes("katakana", Array.isArray(parsed.katakana) ? parsed.katakana.map(Number) : DEFAULT_LESSON_SELECTIONS.katakana),
+        };
+      } catch {
+        return DEFAULT_LESSON_SELECTIONS;
+      }
+    }
+
+    const cursorSerialized = window.localStorage.getItem(LESSON_CURSOR_STORAGE_KEY);
+    if (cursorSerialized) {
+      try {
+        const parsed = JSON.parse(cursorSerialized) as Partial<LessonCursorState>;
+        return {
+          kanji: normalizeLessonCampIndexes("kanji", [Number(parsed.kanji ?? 0)]),
+          hiragana: normalizeLessonCampIndexes("hiragana", [Number(parsed.hiragana ?? 0)]),
+          katakana: normalizeLessonCampIndexes("katakana", [Number(parsed.katakana ?? 0)]),
+        };
+      } catch {
+        return DEFAULT_LESSON_SELECTIONS;
+      }
+    }
+
+    return DEFAULT_LESSON_SELECTIONS;
   });
 
   const currentTrackConfig = trackConfigs[activeTrack];
@@ -1111,6 +1176,10 @@ function App() {
   }, [lessonCursorByTrack]);
 
   useEffect(() => {
+    window.localStorage.setItem(SELECTED_LESSON_CAMPS_STORAGE_KEY, JSON.stringify(selectedLessonCampIndexesByTrack));
+  }, [selectedLessonCampIndexesByTrack]);
+
+  useEffect(() => {
     window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
   }, [settings]);
 
@@ -1156,16 +1225,28 @@ function App() {
   );
 
   const trailLessonCount = Math.max(1, currentLessons.length);
-  const currentLessonCursor = lessonCursorByTrack[activeTrack] % Math.max(1, currentLessons.length);
+  const selectedLessonCampIndexes = normalizeLessonCampIndexes(
+    activeTrack,
+    selectedLessonCampIndexesByTrack[activeTrack]?.length > 0
+      ? selectedLessonCampIndexesByTrack[activeTrack]
+      : [lessonCursorByTrack[activeTrack] % Math.max(1, currentLessons.length)],
+  );
+  const selectedLessonCampNumbers = campIndexesToNumbers(selectedLessonCampIndexes);
+  const currentLessonCursor = selectedLessonCampIndexes[0] ?? lessonCursorByTrack[activeTrack] % Math.max(1, currentLessons.length);
   const currentLessonDefinition = currentLessons[currentLessonCursor];
+  const selectedLessonDefinitions = selectedLessonCampIndexes
+    .map((index) => currentLessons[index])
+    .filter((lesson): lesson is SeedLesson => Boolean(lesson));
   const currentLessonItem = activeLessonItems[lessonIndex];
   const currentHandwritingItem = activeLessonItems[handwritingIndex];
   const isCurrentHandwritingSupported = currentHandwritingItem ? supportedHandwritingCharacters.has(currentHandwritingItem.character) : false;
   const currentQuestion = quizQuestions[quizIndex];
   const currentContextExample = contextExamples[contextIndex];
   const currentLessonKnownCount =
-    currentLessonDefinition?.itemIds.filter((itemId) => getProgressStatus(progressByItem[itemId], settings.correctAnswersToKnown) === "known").length ?? 0;
-  const currentLessonTotalCount = currentLessonDefinition?.itemIds.length ?? 0;
+    Array.from(new Set(selectedLessonDefinitions.flatMap((lesson) => lesson.itemIds))).filter(
+      (itemId) => getProgressStatus(progressByItem[itemId], settings.correctAnswersToKnown) === "known",
+    ).length;
+  const currentLessonTotalCount = Array.from(new Set(selectedLessonDefinitions.flatMap((lesson) => lesson.itemIds))).length;
 
   const trackAttempts = useMemo(
     () =>
@@ -1309,87 +1390,49 @@ function App() {
     });
   }, [sumoCategory, sumoQuery]);
 
-  function buildLessonSegment(lesson: SeedLesson | undefined, eligibleItems = currentLessonEligibleItems): StudyItem[] {
+  function buildLessonSegment(lessons: SeedLesson[], eligibleItems = currentLessonEligibleItems): StudyItem[] {
     if (eligibleItems.length === 0) {
       return [];
     }
 
-    const baseLessonItems =
-      lesson?.itemIds
+    const baseLessonItems = lessons.flatMap((lesson) =>
+      lesson.itemIds
         .map((itemId) => itemById.get(itemId))
         .filter((item): item is StudyItem => Boolean(item))
         .filter((item) => !(progressByItem[item.id]?.excludedFromLessons ?? false))
-        .filter((item) => settings.includeKnownInLessons || getProgressStatus(progressByItem[item.id], settings.correctAnswersToKnown) !== "known") ?? [];
+        .filter((item) => settings.includeKnownInLessons || getProgressStatus(progressByItem[item.id], settings.correctAnswersToKnown) !== "known"),
+    );
 
-    const revisitRows = reviewTracker
-      .getQueue(
-        currentTrailItems
-          .filter((item) => {
-            const progress = progressByItem[item.id] ?? createDefaultProgress(item.id);
-            return progress.correctCount + progress.incorrectCount > 0 && getProgressStatus(progress, settings.correctAnswersToKnown) !== "known";
-          })
-          .map((item) => progressByItem[item.id] ?? createDefaultProgress(item.id)),
-        settings.correctAnswersToKnown,
-      )
-      .slice(0, Math.max(REVISIT_INSERTS, baseLessonItems.length === 0 ? 5 : REVISIT_INSERTS));
-
-    const picked: StudyItem[] = [];
-    for (const row of revisitRows) {
-      const item = itemById.get(row.itemId);
-      if (item && !picked.some((candidate) => candidate.id === item.id)) {
-        picked.push(item);
-      }
+    if (lessons.length > 0 && baseLessonItems.length === 0) {
+      return [];
     }
 
-    for (const item of baseLessonItems) {
-      if (!picked.some((candidate) => candidate.id === item.id)) {
-        picked.push(item);
-      }
+    if (lessons.length === 0 && baseLessonItems.length === 0) {
+      return shuffle(eligibleItems).slice(0, Math.min(5, eligibleItems.length));
     }
 
-    if (picked.length === 0) {
-      return eligibleItems.slice(0, Math.min(5, eligibleItems.length));
-    }
-
-    return picked;
+    return shuffle(baseLessonItems).slice(0, settings.maxQuestionsPerLesson);
   }
 
   function buildMatchingLessonSegment(items: StudyItem[]): StudyItem[] {
     const uniqueItems = items.filter((item, index, collection) => collection.findIndex((candidate) => candidate.id === item.id) === index);
 
-    if (uniqueItems.length >= MATCHING_BOARD_SIZE) {
-      return uniqueItems.slice(0, MATCHING_BOARD_SIZE);
-    }
-
-    const fallbackItems = shuffle(currentTrailItems)
-      .filter((item) => !uniqueItems.some((candidate) => candidate.id === item.id))
-      .slice(0, MATCHING_BOARD_SIZE - uniqueItems.length);
-
-    return [...uniqueItems, ...fallbackItems].slice(0, MATCHING_BOARD_SIZE);
+    return uniqueItems.slice(0, MATCHING_BOARD_SIZE);
   }
 
   function buildConcentrationLessonSegment(items: StudyItem[]): StudyItem[] {
-    const concentrationEligibleTrailItems = currentTrailItems.filter(supportsConcentration);
     const uniqueItems = items
       .filter(supportsConcentration)
       .filter((item, index, collection) => collection.findIndex((candidate) => candidate.id === item.id) === index);
 
-    if (uniqueItems.length >= CONCENTRATION_PAIR_COUNT) {
-      return uniqueItems.slice(0, CONCENTRATION_PAIR_COUNT);
-    }
-
-    const fallbackItems = shuffle(concentrationEligibleTrailItems)
-      .filter((item) => !uniqueItems.some((candidate) => candidate.id === item.id))
-      .slice(0, CONCENTRATION_PAIR_COUNT - uniqueItems.length);
-
-    return [...uniqueItems, ...fallbackItems].slice(0, CONCENTRATION_PAIR_COUNT);
+    return uniqueItems.slice(0, CONCENTRATION_PAIR_COUNT);
   }
 
-  function buildRouteLessonSession(track: StudyTrack, campIndex: number) {
+  function buildRouteLessonSession(track: StudyTrack, campIndexes: number[]) {
     const config = trackConfigs[track];
     const lessons = config.lessons;
-    const clampedCampIndex = clamp(campIndex, 0, Math.max(0, lessons.length - 1));
-    const lessonDefinition = lessons[clampedCampIndex];
+    const clampedCampIndexes = normalizeLessonCampIndexes(track, campIndexes);
+    const lessonDefinitions = clampedCampIndexes.map((index) => lessons[index]).filter((lesson): lesson is SeedLesson => Boolean(lesson));
     const trailItems = config.pool.filter((item) => !(progressByItem[item.id]?.excludedFromLessons ?? false));
     const pendingItems = trailItems.filter((item) => getProgressStatus(progressByItem[item.id], settings.correctAnswersToKnown) !== "known");
     const eligibleItems = settings.includeKnownInLessons ? trailItems : pendingItems;
@@ -1398,50 +1441,30 @@ function App() {
       return null;
     }
 
-    const baseLessonItems =
-      lessonDefinition?.itemIds
+    const baseLessonItems = lessonDefinitions.flatMap((lesson) =>
+      lesson.itemIds
         .map((itemId) => itemById.get(itemId))
         .filter((item): item is StudyItem => Boolean(item))
         .filter((item) => !(progressByItem[item.id]?.excludedFromLessons ?? false))
-        .filter((item) => settings.includeKnownInLessons || getProgressStatus(progressByItem[item.id], settings.correctAnswersToKnown) !== "known") ?? [];
+        .filter((item) => settings.includeKnownInLessons || getProgressStatus(progressByItem[item.id], settings.correctAnswersToKnown) !== "known"),
+    );
 
-    const revisitRows = reviewTracker
-      .getQueue(
-        trailItems
-          .filter((item) => {
-            const progress = progressByItem[item.id] ?? createDefaultProgress(item.id);
-            return progress.correctCount + progress.incorrectCount > 0 && getProgressStatus(progress, settings.correctAnswersToKnown) !== "known";
-          })
-          .map((item) => progressByItem[item.id] ?? createDefaultProgress(item.id)),
-        settings.correctAnswersToKnown,
-      )
-      .slice(0, Math.max(REVISIT_INSERTS, baseLessonItems.length === 0 ? 5 : REVISIT_INSERTS));
-
-    const picked: StudyItem[] = [];
-    for (const row of revisitRows) {
-      const item = itemById.get(row.itemId);
-      if (item && !picked.some((candidate) => candidate.id === item.id)) {
-        picked.push(item);
-      }
-    }
-
-    for (const item of baseLessonItems) {
-      if (!picked.some((candidate) => candidate.id === item.id)) {
-        picked.push(item);
-      }
-    }
-
-    const lessonSegment = picked.length === 0 ? eligibleItems.slice(0, Math.min(5, eligibleItems.length)) : picked;
+    const lessonSegment = lessonDefinitions.length > 0 && baseLessonItems.length === 0
+      ? []
+      : baseLessonItems.length === 0
+        ? shuffle(eligibleItems).slice(0, Math.min(5, eligibleItems.length))
+        : shuffle(baseLessonItems).slice(0, settings.maxQuestionsPerLesson);
     if (lessonSegment.length === 0) {
       return null;
     }
 
     return {
-      campIndex: clampedCampIndex,
-      title: lessonDefinition?.title ?? `${config.label} Lesson`,
+      campIndexes: clampedCampIndexes,
+      primaryCampIndex: clampedCampIndexes[0] ?? 0,
+      title: lessonDefinitions.length === 1
+        ? lessonDefinitions[0].title
+        : `${config.label} Camps ${campIndexesToNumbers(clampedCampIndexes).join(", ")}`,
       items: lessonSegment,
-      eligibleItems,
-      trailItems,
     };
   }
 
@@ -1497,7 +1520,7 @@ function App() {
   function currentDashboardRoute(): AppRoute {
     return activeMount === "base"
       ? { screen: "dashboard", mount: "base", intro: baseStudyIndex + 1 }
-      : { screen: "dashboard", mount: activeTrack, camp: currentLessonCursor + 1 };
+      : { screen: "dashboard", mount: activeTrack, camp: currentLessonCursor + 1, camps: selectedLessonCampNumbers };
   }
 
   function resetRouteSessionState() {
@@ -1537,9 +1560,10 @@ function App() {
       } else {
         setActiveMount(route.mount);
         setActiveTrack(route.mount);
-        if (route.camp) {
-          const campIndex = clamp(route.camp - 1, 0, Math.max(0, trackConfigs[route.mount].lessons.length - 1));
-          setLessonCursorByTrack((previous) => ({ ...previous, [route.mount]: campIndex }));
+        const routeCampIndexes = normalizeLessonCampNumbers(route.mount, route.camps, route.camp ? route.camp - 1 : lessonCursorByTrack[route.mount]);
+        if (route.camps || route.camp) {
+          setSelectedLessonCampIndexesByTrack((previous) => ({ ...previous, [route.mount]: routeCampIndexes }));
+          setLessonCursorByTrack((previous) => ({ ...previous, [route.mount]: routeCampIndexes[0] ?? 0 }));
         }
       }
       setScreen("dashboard");
@@ -1549,7 +1573,8 @@ function App() {
       setBaseStudyIndex(clamp(route.intro - 1, 0, Math.max(0, baseCampStudies.length - 1)));
       setScreen("baseStudy");
     } else if (route.screen === "lesson") {
-      const session = buildRouteLessonSession(route.mount, route.camp - 1);
+      const routeCampIndexes = normalizeLessonCampNumbers(route.mount, route.camps, route.camp - 1);
+      const session = buildRouteLessonSession(route.mount, routeCampIndexes);
       if (!session) {
         setActiveMount(route.mount);
         setActiveTrack(route.mount);
@@ -1559,7 +1584,8 @@ function App() {
         resetRouteSessionState();
         setActiveMount(route.mount);
         setActiveTrack(route.mount);
-        setLessonCursorByTrack((previous) => ({ ...previous, [route.mount]: session.campIndex }));
+        setSelectedLessonCampIndexesByTrack((previous) => ({ ...previous, [route.mount]: session.campIndexes }));
+        setLessonCursorByTrack((previous) => ({ ...previous, [route.mount]: session.primaryCampIndex }));
         setActiveLessonItems(session.items);
         setActiveLessonTitle(session.title);
         setLessonIndex(clamp(route.step - 1, 0, Math.max(0, session.items.length - 1)));
@@ -1567,22 +1593,20 @@ function App() {
           getContextExamplesForItems(
             session.items,
             3,
-            session.trailItems.filter(
-              (item) =>
-                session.items.some((lessonItem) => lessonItem.id === item.id) ||
-                getProgressStatus(progressByItem[item.id], settings.correctAnswersToKnown) === "known",
-            ),
+            session.items,
           ),
         );
-        setQuizQuestions(buildQuestionsForMode(session.items, session.eligibleItems, settings.quizMode));
+        setQuizQuestions(buildQuestionsForMode(session.items, session.items, settings.quizMode));
         setScreen("lesson");
       }
     } else if (route.screen === "quiz" || route.screen === "context" || route.screen === "summary") {
-      const session = buildRouteLessonSession(route.mount, route.camp - 1);
+      const routeCampIndexes = normalizeLessonCampNumbers(route.mount, route.camps, route.camp - 1);
+      const session = buildRouteLessonSession(route.mount, routeCampIndexes);
       resetRouteSessionState();
       setActiveMount(route.mount);
       setActiveTrack(route.mount);
-      setLessonCursorByTrack((previous) => ({ ...previous, [route.mount]: session?.campIndex ?? route.camp - 1 }));
+      setSelectedLessonCampIndexesByTrack((previous) => ({ ...previous, [route.mount]: session?.campIndexes ?? routeCampIndexes }));
+      setLessonCursorByTrack((previous) => ({ ...previous, [route.mount]: session?.primaryCampIndex ?? routeCampIndexes[0] ?? 0 }));
       if (session) {
         setActiveLessonItems(session.items);
         setActiveLessonTitle(session.title);
@@ -1641,7 +1665,11 @@ function App() {
   });
 
   function switchTrack(track: StudyTrack) {
-    writeRoute({ screen: "dashboard", mount: track, camp: (lessonCursorByTrack[track] ?? 0) + 1 });
+    const selectedCampIndexes = normalizeLessonCampIndexes(
+      track,
+      selectedLessonCampIndexesByTrack[track]?.length > 0 ? selectedLessonCampIndexesByTrack[track] : [lessonCursorByTrack[track] ?? 0],
+    );
+    writeRoute({ screen: "dashboard", mount: track, camp: (selectedCampIndexes[0] ?? 0) + 1, camps: campIndexesToNumbers(selectedCampIndexes) });
     setActiveMount(track);
     setActiveTrack(track);
     setScreen("dashboard");
@@ -1695,19 +1723,28 @@ function App() {
     setKnownEvent(null);
   }
 
-  function selectLessonCamp(index: number) {
+  function toggleLessonCamp(index: number) {
     const clampedIndex = clamp(index, 0, Math.max(0, currentLessons.length - 1));
-    writeRoute({ screen: "dashboard", mount: activeTrack, camp: clampedIndex + 1 }, "replace");
-    setLessonCursorByTrack((previous) => ({
-      ...previous,
-      [activeTrack]: clampedIndex,
-    }));
+    const currentIndexes = normalizeLessonCampIndexes(activeTrack, selectedLessonCampIndexesByTrack[activeTrack] ?? [currentLessonCursor]);
+    const nextIndexes = currentIndexes.includes(clampedIndex)
+      ? currentIndexes.filter((selectedIndex) => selectedIndex !== clampedIndex)
+      : [...currentIndexes, clampedIndex];
+    const normalizedNextIndexes = normalizeLessonCampIndexes(activeTrack, nextIndexes.length > 0 ? nextIndexes : [clampedIndex]);
+
+    writeRoute({ screen: "dashboard", mount: activeTrack, camp: normalizedNextIndexes[0] + 1, camps: campIndexesToNumbers(normalizedNextIndexes) }, "replace");
+    setSelectedLessonCampIndexesByTrack((previous) => ({ ...previous, [activeTrack]: normalizedNextIndexes }));
+    setLessonCursorByTrack((previous) => ({ ...previous, [activeTrack]: normalizedNextIndexes[0] }));
     setDashboardMessage("");
   }
 
-  function startLesson(lessonIndexOverride = currentLessonCursor) {
-    const lessonIndex = clamp(lessonIndexOverride, 0, Math.max(0, currentLessons.length - 1));
-    const lessonDefinition = currentLessons[lessonIndex];
+  function startLesson(lessonIndexOverride?: number) {
+    const selectedCampIndexes = lessonIndexOverride === undefined
+      ? normalizeLessonCampIndexes(activeTrack, selectedLessonCampIndexesByTrack[activeTrack]?.length > 0 ? selectedLessonCampIndexesByTrack[activeTrack] : [currentLessonCursor])
+      : normalizeLessonCampIndexes(activeTrack, [lessonIndexOverride]);
+    const lessonDefinitions = selectedCampIndexes
+      .map((index) => currentLessons[index])
+      .filter((lesson): lesson is SeedLesson => Boolean(lesson));
+    const primaryLessonIndex = selectedCampIndexes[0] ?? currentLessonCursor;
     const eligibleItems = settings.includeKnownInLessons ? currentTrailItems : currentPendingItems;
 
     if (eligibleItems.length === 0) {
@@ -1716,7 +1753,7 @@ function App() {
       return;
     }
 
-    const lessonSegment = buildLessonSegment(lessonDefinition, eligibleItems);
+    const lessonSegment = buildLessonSegment(lessonDefinitions, eligibleItems);
     if (lessonSegment.length === 0) {
       setDashboardMessage(`No eligible ${currentTrackConfig.unitPlural} are available for the next trail segment.`);
       setScreen("dashboard");
@@ -1730,26 +1767,31 @@ function App() {
           ? buildConcentrationLessonSegment(lessonSegment)
           : lessonSegment;
 
-    if (settings.quizMode === "matching" && preparedLessonSegment.length < MATCHING_BOARD_SIZE) {
-      setDashboardMessage(`Matching mode needs ${MATCHING_BOARD_SIZE} available ${currentTrackConfig.unitPlural}.`);
+    if (settings.quizMode === "matching" && preparedLessonSegment.length < MATCHING_MIN_PAIR_COUNT) {
+      setDashboardMessage(`Matching mode needs at least ${MATCHING_MIN_PAIR_COUNT} available ${currentTrackConfig.unitPlural} in this camp.`);
       setScreen("dashboard");
       return;
     }
 
-    if (settings.quizMode === "concentration" && preparedLessonSegment.length < CONCENTRATION_PAIR_COUNT) {
-      setDashboardMessage(`Concentration needs ${CONCENTRATION_PAIR_COUNT} available ${currentTrackConfig.unitPlural}.`);
+    if (settings.quizMode === "concentration" && preparedLessonSegment.length < CONCENTRATION_MIN_PAIR_COUNT) {
+      setDashboardMessage(`Concentration needs at least ${CONCENTRATION_MIN_PAIR_COUNT} available ${currentTrackConfig.unitPlural} in this camp.`);
       setScreen("dashboard");
       return;
     }
 
     setDashboardMessage("");
-    writeRoute({ screen: "lesson", mount: activeTrack, camp: lessonIndex + 1, step: 1 });
+    writeRoute({ screen: "lesson", mount: activeTrack, camp: primaryLessonIndex + 1, camps: campIndexesToNumbers(selectedCampIndexes), step: 1 });
+    setSelectedLessonCampIndexesByTrack((previous) => ({ ...previous, [activeTrack]: selectedCampIndexes }));
     setLessonCursorByTrack((previous) => ({
       ...previous,
-      [activeTrack]: lessonIndex,
+      [activeTrack]: primaryLessonIndex,
     }));
     setActiveLessonItems(preparedLessonSegment);
-    setActiveLessonTitle(lessonDefinition?.title ?? `${currentTrackConfig.label} Lesson`);
+    setActiveLessonTitle(
+      lessonDefinitions.length === 1
+        ? lessonDefinitions[0].title
+        : `${currentTrackConfig.label} Camps ${campIndexesToNumbers(selectedCampIndexes).join(", ")}`,
+    );
     setScreen("lesson");
     setLessonIndex(0);
     setQuizIndex(0);
@@ -1775,14 +1817,10 @@ function App() {
       getContextExamplesForItems(
         preparedLessonSegment,
         3,
-        currentTrailItems.filter(
-          (item) =>
-            preparedLessonSegment.some((lessonItem) => lessonItem.id === item.id) ||
-            getProgressStatus(progressByItem[item.id], settings.correctAnswersToKnown) === "known",
-        ),
+        preparedLessonSegment,
       ),
     );
-    setQuizQuestions(buildQuestionsForMode(preparedLessonSegment, eligibleItems, settings.quizMode));
+    setQuizQuestions(buildQuestionsForMode(preparedLessonSegment, preparedLessonSegment, settings.quizMode));
   }
 
   function startHandwritingTrail() {
@@ -1914,7 +1952,7 @@ function App() {
       return;
     }
 
-    writeRoute({ screen: "lesson", mount: activeTrack, camp: currentLessonCursor + 1, step: lessonIndex + 2 }, "replace");
+    writeRoute({ screen: "lesson", mount: activeTrack, camp: currentLessonCursor + 1, camps: selectedLessonCampNumbers, step: lessonIndex + 2 }, "replace");
     setLessonIndex((value) => value + 1);
   }
 
@@ -2384,20 +2422,25 @@ function App() {
 	                      <h2 className="text-lg font-bold text-slate-900">Choose Study</h2>
 	                      {!isBaseMount && (
 	                        <p className="text-sm text-slate-600">
-	                          {currentTrackConfig.label} - {currentLessonDefinition?.title ?? "Trail Lesson"}
+	                          {currentTrackConfig.label} - {selectedLessonDefinitions.length === 1 ? selectedLessonDefinitions[0].title : `${selectedLessonDefinitions.length} camps selected`}
 	                        </p>
 	                      )}
 	                    </div>
 	                    {isBaseMount && <p className="mt-1 text-sm text-slate-600">Base Camp - Intro {baseStudyIndex + 1}</p>}
 	                    {!isBaseMount && (
 	                      <p className="mt-1 text-sm text-slate-600">
-	                        Selected study {currentLessonCursor + 1} of {trailLessonCount}: {currentLessonKnownCount}/{currentLessonTotalCount} known
+	                        Selected {selectedLessonCampIndexes.length === 1 ? "camp" : "camps"} {selectedLessonCampNumbers.join(", ")} of {trailLessonCount}: {currentLessonKnownCount}/{currentLessonTotalCount} known
 	                      </p>
 	                    )}
 	                    {dashboardMessage && <p className="mt-2 text-sm font-semibold text-emerald-800">{dashboardMessage}</p>}
 	                  </div>
 	
-	                  <div className="grid w-full gap-2 sm:grid-cols-2 xl:w-auto xl:grid-cols-2">
+	                  <div className="grid w-full gap-2 sm:grid-cols-3 xl:w-auto xl:grid-cols-3">
+                      {!isBaseMount && (
+                        <button type="button" onClick={() => startLesson()} className="rounded-xl border border-cyan-700 bg-cyan-50 px-4 py-2 text-sm font-semibold text-cyan-900 transition hover:bg-cyan-100">
+                          {selectedLessonCampIndexes.length === 1 ? "Start Camp" : "Start Camps"}
+                        </button>
+                      )}
 	                    {!isBaseMount && HANDWRITING_TRAIL_TRACKS.has(activeTrack) && (
 	                      <button type="button" onClick={startHandwritingTrail} className="rounded-xl border border-slate-700 bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-50">
 	                        Handwriting Trail
@@ -2451,16 +2494,16 @@ function App() {
 	                        )})
 	                      ) : currentLessons.map((lesson, index) => {
 	                        const lessonKnown = lesson.itemIds.filter((itemId) => getProgressStatus(progressByItem[itemId], settings.correctAnswersToKnown) === "known").length;
-	                        const isSelected = index === currentLessonCursor;
+	                        const isSelected = selectedLessonCampIndexes.includes(index);
 	                        const isComplete = lesson.itemIds.length > 0 && lessonKnown >= lesson.itemIds.length;
 	                        return (
 	                          <article
 	                            key={lesson.id}
 	                            className={`flex items-center gap-2 rounded-xl border transition ${campProgressTone(lessonKnown, lesson.itemIds.length, isSelected)}`}
 	                          >
-	                            <button type="button" onClick={() => selectLessonCamp(index)} className="min-w-0 flex-1 px-3 py-2 text-left">
+	                            <button type="button" onClick={() => toggleLessonCamp(index)} className="min-w-0 flex-1 px-3 py-2 text-left">
 	                              <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-	                                <p className="shrink-0 text-xs font-semibold uppercase tracking-wide text-slate-500">Camp {index + 1}</p>
+	                                <p className={`shrink-0 text-xs font-bold uppercase tracking-wide ${isSelected ? "text-cyan-700" : "text-slate-500"}`}>Camp {index + 1}</p>
 	                                <p className="min-w-0 text-sm font-bold leading-tight">{lesson.title}</p>
 	                                <p className="shrink-0 text-xs font-semibold text-slate-700">
 	                                  {lessonKnown}/{lesson.itemIds.length} known
@@ -2468,7 +2511,6 @@ function App() {
 	                                {!isSelected && isComplete && <span className="rounded-full bg-emerald-700 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">Done</span>}
 	                              </div>
 	                            </button>
-	                            {isSelected && <StudyStartButton label={`Start Camp ${index + 1}`} onClick={() => startLesson(index)} />}
 	                          </article>
 	                        );
 	                      })}
@@ -2779,70 +2821,81 @@ function App() {
                 <p className="text-sm font-semibold uppercase tracking-wide text-emerald-700">
                   {currentQuestion.kind === "matching" ? "Match Board" : currentQuestion.kind === "concentration" ? "Concentration Board" : "Quiz"} {quizIndex + 1} of {quizQuestions.length}
                 </p>
-                {currentQuestion.kind === "multiple_choice" ? (
-                  <h2 className="mt-3 text-2xl font-bold text-slate-900">
-                    {currentTrackConfig.promptLabel} "{currentQuestion.promptLabel}"?
-                  </h2>
-                ) : currentQuestion.kind === "concentration" ? (
+                {currentQuestion.kind === "concentration" ? (
                   <h2 className="mt-3 text-2xl font-bold text-slate-900">
                     {currentQuestion.promptLabel}
                   </h2>
-                ) : (
+                ) : currentQuestion.kind === "matching" ? (
                   <h2 className="mt-3 text-2xl font-bold text-slate-900">{currentQuestion.promptLabel}</h2>
-                )}
+                ) : null}
               </div>
-              <div className="w-full max-w-md">
-                <MountProgressCard
-                  progress={activeMountProgress}
-                  active
-                  reducedMotion={settings.reducedMotion}
-                  correctAnswersToKnown={settings.correctAnswersToKnown}
-                />
-              </div>
+              {currentQuestion.kind !== "multiple_choice" && (
+                <div className="w-full max-w-md">
+                  <MountProgressCard
+                    progress={activeMountProgress}
+                    active
+                    reducedMotion={settings.reducedMotion}
+                    correctAnswersToKnown={settings.correctAnswersToKnown}
+                  />
+                </div>
+              )}
             </div>
 
             {currentQuestion.kind === "multiple_choice" && (
-              <>
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  {currentQuestion.options.map((option) => (
-                    <button
-                      key={option}
-                      type="button"
-                      onClick={() => submitAnswer(option)}
-                      disabled={Boolean(answerFeedback)}
-                      className="rounded-2xl border border-slate-200 bg-white px-3 py-5 text-4xl font-bold text-slate-900 transition hover:border-emerald-500 hover:bg-emerald-50"
-                    >
-                      {option}
-                    </button>
-                  ))}
-                </div>
-
-                {answerFeedback && (
-                  <div
-                    className={`mt-4 rounded-2xl border p-4 ${
-                      answerFeedback.tone === "success"
-                        ? "border-emerald-200 bg-emerald-50 text-emerald-950"
-                        : "border-rose-200 bg-rose-50 text-rose-950"
-                    }`}
-                  >
-                    <p className="text-sm font-bold">{answerFeedback.title}</p>
-                    <p className="mt-1 text-sm">{answerFeedback.message}</p>
-                    <p className="mt-1 text-sm font-semibold">{answerFeedback.nextAction}</p>
-                    {knownEventItem?.id === currentQuestion.itemId && (
-                      <p className="text-sm font-semibold text-cyan-800">
-                        {knownEventItem.character} is now known. Your climber moved one step higher on {trackConfigs[activeTrack].label}.
-                      </p>
-                    )}
-                    <button
-                      type="button"
-                      onClick={advanceQuiz}
-                      className="mt-3 rounded-full bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition hover:bg-slate-700"
-                    >
-                      {quizIndex + 1 >= quizQuestions.length ? (contextExamples.length > 0 ? "Start Context Reading" : "Finish Trail") : "Continue"}
-                    </button>
+              <div className="mt-3 grid gap-4 lg:grid-cols-[minmax(0,1fr)_24rem] lg:items-start">
+                <div>
+                  <h2 className="text-2xl font-bold text-slate-900">
+                    {currentTrackConfig.promptLabel} "{currentQuestion.promptLabel}"?
+                  </h2>
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    {currentQuestion.options.map((option) => (
+                      <button
+                        key={option}
+                        type="button"
+                        onClick={() => submitAnswer(option)}
+                        disabled={Boolean(answerFeedback)}
+                        className="rounded-2xl border border-slate-200 bg-white px-3 py-5 text-4xl font-bold text-slate-900 transition hover:border-emerald-500 hover:bg-emerald-50"
+                      >
+                        {option}
+                      </button>
+                    ))}
                   </div>
-                )}
-              </>
+
+                  {answerFeedback && (
+                    <div
+                      className={`mt-4 rounded-2xl border p-4 ${
+                        answerFeedback.tone === "success"
+                          ? "border-emerald-200 bg-emerald-50 text-emerald-950"
+                          : "border-rose-200 bg-rose-50 text-rose-950"
+                      }`}
+                    >
+                      <p className="text-sm font-bold">{answerFeedback.title}</p>
+                      <p className="mt-1 text-sm">{answerFeedback.message}</p>
+                      <p className="mt-1 text-sm font-semibold">{answerFeedback.nextAction}</p>
+                      {knownEventItem?.id === currentQuestion.itemId && (
+                        <p className="text-sm font-semibold text-cyan-800">
+                          {knownEventItem.character} is now known. Your climber moved one step higher on {trackConfigs[activeTrack].label}.
+                        </p>
+                      )}
+                      <button
+                        type="button"
+                        onClick={advanceQuiz}
+                        className="mt-3 rounded-full bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition hover:bg-slate-700"
+                      >
+                        {quizIndex + 1 >= quizQuestions.length ? (contextExamples.length > 0 ? "Start Context Reading" : "Finish Trail") : "Continue"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <div className="w-full">
+                  <MountProgressCard
+                    progress={activeMountProgress}
+                    active
+                    reducedMotion={settings.reducedMotion}
+                    correctAnswersToKnown={settings.correctAnswersToKnown}
+                  />
+                </div>
+              </div>
             )}
 
             {currentQuestion.kind === "matching" && (
@@ -3716,6 +3769,20 @@ function App() {
                       onChange={(event) => {
                         const correctAnswersToKnown = normalizeCorrectAnswersToKnown(event.currentTarget.valueAsNumber);
                         setSettings((previous) => ({ ...previous, correctAnswersToKnown }));
+                      }}
+                      className="w-20 rounded-lg border border-slate-300 bg-white px-2 py-1 text-right text-sm font-semibold text-slate-900"
+                    />
+                  </label>
+                  <label className="flex items-center justify-between gap-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                    <span className="text-sm font-medium text-slate-800">Max Questions Per Lesson</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={50}
+                      value={settings.maxQuestionsPerLesson}
+                      onChange={(event) => {
+                        const maxQuestionsPerLesson = normalizeMaxQuestionsPerLesson(event.currentTarget.valueAsNumber);
+                        setSettings((previous) => ({ ...previous, maxQuestionsPerLesson }));
                       }}
                       className="w-20 rounded-lg border border-slate-300 bg-white px-2 py-1 text-right text-sm font-semibold text-slate-900"
                     />
