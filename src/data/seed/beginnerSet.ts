@@ -209,4 +209,42 @@ const n3SupplementPool: Kanji[] = jlptSupplementRows
     jlptLevel: "N3" as const,
   }));
 
-export const beginnerKanjiPool: Kanji[] = [...n5KanjiPool, ...n4SupplementPool, ...n3SupplementPool];
+const n2SupplementPool: Kanji[] = jlptSupplementRows
+  .filter((row) => row.jlptLevel === "N2" && !existingCharacters.has(row.character))
+  .map((row, index) => ({
+    ...withSumoMetadata(row, row.tags),
+    id: `kanji_n2_${String(index + 1).padStart(3, "0")}`,
+    character: row.character,
+    script: "kanji",
+    primaryMeaning: row.primaryMeaning,
+    meanings: row.meanings,
+    onyomi: row.onyomi,
+    kunyomi: row.kunyomi,
+    strokeCount: row.strokeCount,
+    radical: row.radical,
+    jlptLevel: "N2" as const,
+  }));
+
+const n1SupplementPool: Kanji[] = jlptSupplementRows
+  .filter((row) => row.jlptLevel === "N1" && !existingCharacters.has(row.character))
+  .map((row, index) => ({
+    ...withSumoMetadata(row, row.tags),
+    id: `kanji_n1_${String(index + 1).padStart(3, "0")}`,
+    character: row.character,
+    script: "kanji",
+    primaryMeaning: row.primaryMeaning,
+    meanings: row.meanings,
+    onyomi: row.onyomi,
+    kunyomi: row.kunyomi,
+    strokeCount: row.strokeCount,
+    radical: row.radical,
+    jlptLevel: "N1" as const,
+  }));
+
+export const beginnerKanjiPool: Kanji[] = [
+  ...n5KanjiPool,
+  ...n4SupplementPool,
+  ...n3SupplementPool,
+  ...n2SupplementPool,
+  ...n1SupplementPool,
+];

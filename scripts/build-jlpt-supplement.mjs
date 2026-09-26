@@ -8,7 +8,7 @@ const EXISTING_BASE = new Set([
   "同", "事", "自", "社", "発", "者", "地", "業", "開", "手", "力", "問", "代", "明", "動", "京", "目", "通", "言", "理",
 ]);
 
-const LEVELS = [4, 3];
+const LEVELS = [4, 3, 2, 1];
 const TARGET_FILE = new URL("../src/data/seed/jlptSupplement.ts", import.meta.url);
 
 function normalizeReading(reading) {
@@ -41,7 +41,7 @@ function toTs(rowsByLevel) {
     "  kunyomi: string[];",
     "  strokeCount: number;",
     "  radical: string;",
-    "  jlptLevel: \"N4\" | \"N3\";",
+    "  jlptLevel: \"N4\" | \"N3\" | \"N2\" | \"N1\";",
     "  tags: string[];",
     "  sumoRelevant?: boolean;",
     "};",
@@ -65,8 +65,7 @@ function toTs(rowsByLevel) {
 
   const footer = [
     "export const jlptSupplementRows: SupplementSeedRow[] = [",
-    "  ...n4SupplementRows,",
-    "  ...n3SupplementRows,",
+    ...LEVELS.map((level) => `  ...n${level}SupplementRows,`),
     "];",
     "",
   ];
@@ -84,7 +83,7 @@ async function fetchJson(url) {
 
 async function main() {
   const seen = new Set(EXISTING_BASE);
-  const rowsByLevel = { N4: [], N3: [] };
+  const rowsByLevel = Object.fromEntries(LEVELS.map((level) => [`N${level}`, []]));
 
   for (const level of LEVELS) {
     const levelKey = `N${level}`;
@@ -113,7 +112,9 @@ async function main() {
       {
         n4Added: rowsByLevel.N4.length,
         n3Added: rowsByLevel.N3.length,
-        totalAdded: rowsByLevel.N4.length + rowsByLevel.N3.length,
+        n2Added: rowsByLevel.N2.length,
+        n1Added: rowsByLevel.N1.length,
+        totalAdded: Object.values(rowsByLevel).reduce((total, rows) => total + rows.length, 0),
       },
       null,
       2,

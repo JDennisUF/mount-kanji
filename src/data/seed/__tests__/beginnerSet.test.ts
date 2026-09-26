@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { beginnerKanjiPool } from "../beginnerSet";
 
 describe("seed kanji dataset", () => {
-  it("contains the expanded N5, N4, and N3 seed pool", () => {
-    expect(beginnerKanjiPool).toHaveLength(612);
+  it("contains the expanded JLPT seed pool", () => {
+    expect(beginnerKanjiPool).toHaveLength(2211);
   });
 
   it("has unique kanji characters", () => {
@@ -22,6 +22,8 @@ describe("seed kanji dataset", () => {
     expect(counts.N5).toBe(100);
     expect(counts.N4).toBe(145);
     expect(counts.N3).toBe(367);
+    expect(counts.N2).toBe(367);
+    expect(counts.N1).toBe(1232);
   });
 
   it("marks sumo-relevant JLPT kanji with the sumo tag", () => {
