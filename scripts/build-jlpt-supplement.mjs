@@ -1,4 +1,8 @@
-import { writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 
 const EXISTING_BASE = new Set([
   "日", "一", "国", "人", "年", "大", "十", "二", "本", "中", "長", "出", "三", "時", "行", "見", "月", "後", "前", "生",
@@ -10,6 +14,12 @@ const EXISTING_BASE = new Set([
 
 const LEVELS = [4, 3, 2, 1];
 const TARGET_FILE = new URL("../src/data/seed/jlptSupplement.ts", import.meta.url);
+const UNIHAN_URL = "https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip";
+const KANGXI_RADICALS = Array.from({ length: 214 }, (_, index) => String.fromCodePoint(0x2f00 + index));
+const RADICAL_DISPLAY_VARIANTS = new Map([
+  ["⾡", "辶"],
+]);
+const execFileAsync = promisify(execFile);
 
 function normalizeReading(reading) {
   return reading === "" ? "-" : reading.replaceAll(".", "");
@@ -19,7 +29,7 @@ function toPrimaryMeaning(data) {
   return data.heisig_en ?? data.meanings[0] ?? "unknown";
 }
 
-function toRow(data) {
+function toRow(data, radical) {
   return {
     character: data.kanji,
     primaryMeaning: toPrimaryMeaning(data),
@@ -27,8 +37,43 @@ function toRow(data) {
     onyomi: data.on_readings.length > 0 ? data.on_readings : ["-"],
     kunyomi: data.kun_readings.length > 0 ? data.kun_readings.map(normalizeReading) : ["-"],
     strokeCount: data.stroke_count,
-    radical: "other",
+    radical,
   };
+}
+
+async function fetchRadicalsByCharacter() {
+  const directory = await mkdtemp(join(tmpdir(), "mount-kanji-unihan-"));
+  const archivePath = join(directory, "Unihan.zip");
+
+  try {
+    const response = await fetch(UNIHAN_URL);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch Unihan data: ${response.status}`);
+    }
+
+    await writeFile(archivePath, Buffer.from(await response.arrayBuffer()));
+    const { stdout } = await execFileAsync("unzip", ["-p", archivePath, "Unihan_IRGSources.txt"], {
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    const radicalsByCharacter = new Map();
+
+    for (const line of stdout.split("\n")) {
+      const match = /^U\+([0-9A-F]+)\tkRSUnicode\t(\d+)/.exec(line);
+      if (!match) {
+        continue;
+      }
+
+      const radical = KANGXI_RADICALS[Number(match[2]) - 1];
+      if (!radical) {
+        throw new Error(`Unsupported radical number ${match[2]} for U+${match[1]}`);
+      }
+      radicalsByCharacter.set(String.fromCodePoint(Number.parseInt(match[1], 16)), RADICAL_DISPLAY_VARIANTS.get(radical) ?? radical);
+    }
+
+    return radicalsByCharacter;
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 }
 
 function toTs(rowsByLevel) {
@@ -84,6 +129,7 @@ async function fetchJson(url) {
 async function main() {
   const seen = new Set(EXISTING_BASE);
   const rowsByLevel = Object.fromEntries(LEVELS.map((level) => [`N${level}`, []]));
+  const radicalsByCharacter = await fetchRadicalsByCharacter();
 
   for (const level of LEVELS) {
     const levelKey = `N${level}`;
@@ -95,7 +141,11 @@ async function main() {
       }
 
       const data = await fetchJson(`https://kanjiapi.dev/v1/kanji/${encodeURIComponent(character)}`);
-      const row = toRow(data);
+      const radical = radicalsByCharacter.get(character);
+      if (!radical) {
+        throw new Error(`No Unicode radical found for ${character}`);
+      }
+      const row = toRow(data, radical);
       rowsByLevel[levelKey].push({
         ...row,
         jlptLevel: levelKey,

@@ -12,6 +12,12 @@ describe("seed kanji dataset", () => {
     expect(uniqueCharacters.size).toBe(beginnerKanjiPool.length);
   });
 
+  it("assigns a radical to every kanji", () => {
+    expect(beginnerKanjiPool.every((kanji) => kanji.radical && kanji.radical !== "other")).toBe(true);
+    expect(beginnerKanjiPool.find((kanji) => kanji.character === "逓")?.radical).toBe("辶");
+    expect(beginnerKanjiPool.find((kanji) => kanji.character === "遮")?.radical).toBe("辶");
+  });
+
   it("keeps the expected per-level counts", () => {
     const counts = beginnerKanjiPool.reduce<Record<string, number>>((accumulator, kanji) => {
       const level = kanji.jlptLevel ?? "unknown";
