@@ -32,6 +32,12 @@ describe("seed kanji dataset", () => {
     expect(counts.N1).toBe(1232);
   });
 
+  it("tags every JLPT kanji with its level and applies shared subject meanings", () => {
+    expect(beginnerKanjiPool.every((kanji) => kanji.jlptLevel && kanji.tags.includes("jlpt") && kanji.tags.includes(kanji.jlptLevel.toLowerCase()))).toBe(true);
+    const higherLevelTime = beginnerKanjiPool.find((kanji) => kanji.jlptLevel !== "N5" && kanji.meanings.includes("time"));
+    expect(higherLevelTime?.tags).toContain("time");
+  });
+
   it("marks sumo-relevant JLPT kanji with the sumo tag", () => {
     const sumoKanji = beginnerKanjiPool.filter((kanji) => kanji.sumoRelevant);
 

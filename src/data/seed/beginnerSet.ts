@@ -241,10 +241,32 @@ const n1SupplementPool: Kanji[] = jlptSupplementRows
     jlptLevel: "N1" as const,
   }));
 
+// Reuse the curated subject labels when another kanji has the same meaning.
+// Broad curriculum labels do not describe a kanji's subject.
+const nonSubjectTags = new Set(["beginner", "n5", "jlpt", "sumo", "core", "everyday"]);
+const subjectTagsByMeaning = new Map<string, Set<string>>();
+for (const row of n5SeedRows) {
+  for (const meaning of row.meanings) {
+    const key = meaning.trim().toLowerCase();
+    const tags = subjectTagsByMeaning.get(key) ?? new Set<string>();
+    for (const tag of row.tags) {
+      if (!nonSubjectTags.has(tag)) tags.add(tag);
+    }
+    subjectTagsByMeaning.set(key, tags);
+  }
+}
+
 export const beginnerKanjiPool: Kanji[] = [
   ...n5KanjiPool,
   ...n4SupplementPool,
   ...n3SupplementPool,
   ...n2SupplementPool,
   ...n1SupplementPool,
-];
+].map((kanji) => ({
+  ...kanji,
+  tags: Array.from(new Set([
+    ...kanji.tags,
+    ...(kanji.jlptLevel ? ["jlpt", kanji.jlptLevel.toLowerCase()] : []),
+    ...kanji.meanings.flatMap((meaning) => Array.from(subjectTagsByMeaning.get(meaning.trim().toLowerCase()) ?? [])),
+  ])),
+}));

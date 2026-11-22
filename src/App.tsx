@@ -1329,7 +1329,9 @@ function App() {
     const query = dictionaryQuery.trim().toLowerCase();
 
     return currentPool.filter((item) => {
-      if (selectedDictionaryTags.length > 0 && !selectedDictionaryTags.every((tag) => item.tags.includes(tag))) {
+      if (selectedDictionaryTags.length > 0 && !(activeTrack === "kanji"
+        ? selectedDictionaryTags.some((tag) => item.tags.includes(tag))
+        : selectedDictionaryTags.every((tag) => item.tags.includes(tag)))) {
         return false;
       }
 
@@ -3483,8 +3485,26 @@ function App() {
 
             <div className="mt-3 grid gap-3 lg:h-[calc(100vh-12rem)] lg:grid-cols-[minmax(0,1.55fr)_22rem]">
               <div className="rounded-2xl border border-slate-200 bg-white p-3 lg:min-h-0">
-                <div className={`grid gap-2 lg:max-h-full lg:overflow-y-auto lg:pr-1 ${activeTrack === "kanji" ? "grid-cols-5 md:grid-cols-8 lg:grid-cols-8 xl:grid-cols-10" : "grid-cols-5 md:grid-cols-5"}`}>
-	                  {filteredDictionaryItems.map((item) => {
+                <div className="space-y-2 lg:max-h-full lg:overflow-y-auto lg:pr-1">
+                  {(activeTrack === "kanji"
+                    ? ["N5", "N4", "N3", "N2", "N1", "Uncategorized"].map((row) => ({
+                        row,
+                        items: filteredDictionaryItems.filter((item) => (item.jlptLevel ?? "Uncategorized") === row),
+                      })).filter(({ items }) => items.length > 0)
+                    : Array.from(new Set(filteredDictionaryItems.map((item) => item.row ?? "other")), (row) => ({
+                        row,
+                        items: filteredDictionaryItems.filter((item) => (item.row ?? "other") === row),
+                      }))
+                  ).map(({ row, items }) => (
+                    <div key={row} className={activeTrack === "kanji" ? "space-y-2" : "flex items-stretch gap-2"}>
+                      {activeTrack === "kanji" && <h3 className="inline-block rounded-full bg-cyan-100 px-3 py-1 text-sm font-bold text-cyan-900">{row}</h3>}
+                      {activeTrack !== "kanji" && (
+                        <span className="flex w-8 shrink-0 items-center justify-center rounded-full bg-cyan-100 px-1 py-2 text-sm font-bold uppercase text-cyan-900 [writing-mode:vertical-rl] [text-orientation:upright]">
+                          {row.startsWith("contracted-") ? `${row.slice(11).toUpperCase()}ʸ` : row === "small-kana" ? "SM" : row === "n-final" ? "N" : row.replace(/-row$/, "").replace(/-/g, " ")}
+                        </span>
+                      )}
+                      <div className={`grid min-w-0 flex-1 content-start gap-2 ${activeTrack === "kanji" ? "grid-cols-5 md:grid-cols-8 lg:grid-cols-8 xl:grid-cols-10" : "grid-cols-5"}`}>
+	                  {items.map((item) => {
 	                    const isSelected = selectedDictionaryItem?.id === item.id;
 	                    const isKnown = getProgressStatus(progressByItem[item.id], settings.correctAnswersToKnown) === "known";
 	                    return (
@@ -3492,6 +3512,9 @@ function App() {
 	                        key={item.id}
 	                        type="button"
 	                        onClick={() => setSelectedItemId(item.id)}
+                            style={activeTrack !== "kanji" && row !== "small-kana" ? {
+                              gridColumnStart: ({ a: 1, i: 2, u: 3, e: 4, o: 5, ya: 1, yu: 3, yo: 5 } as Record<string, number>)[item.column ?? ""],
+                            } : undefined}
 	                        className={`rounded-xl border px-2 py-3 text-2xl font-bold transition ${
 	                          isSelected
 	                            ? "border-cyan-600 bg-cyan-100 text-cyan-950"
@@ -3504,6 +3527,9 @@ function App() {
 	                      </button>
 	                    );
 	                  })}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
 
